@@ -110,15 +110,31 @@ def cleanup_captive_portproxy(lan_ip: str):
     )
     logger.info(f"[Captive] Windows portproxy forward cleaned up for address {lan_ip}")
 
+# ─── Auto-Rotate State (global, queryable từ API) ────────────────────────────
+# Cho phép endpoint /api/proxies/rotation-status đọc countdown và
+# /api/proxies/rotation-reset reset lại timer mà không cần restart server.
+_rotate_state: dict = {
+    "last_rotate_time": 0.0,   # Unix timestamp lần xoay gần nhất (0 = chưa xoay)
+    "last_rotate_count": 0,    # Số thiết bị đã xoay lần gần nhất
+    "total_rotations": 0,      # Tổng số lần xoay kể từ khi khởi động
+}
+
+
 def perform_auto_rotation(config, mac_registry, singbox_manager):
-    """Thực hiện xoay proxy tự động cho tất cả thiết bị mà không cần HTTP request."""
+    """Thực hiện xoay proxy cho tất cả thiết bị mà không cần HTTP request.
+    
+    Được gọi bởi: auto_rotate_loop (tự động), /api/proxies/rotate-all (thủ công)
+    và /api/proxies/trigger-rotate (force trigger).
+    Cập nhật _rotate_state sau mỗi lần xoay thành công để countdown API có data.
+    """
+    import time as _time
     if not mac_registry or not config.proxies or len(config.proxies) < 2:
-        return
+        return 0
         
     all_devices = mac_registry.get_all_devices()
     proxy_devices = [d for d in all_devices if d.proxy_id]
     if not proxy_devices:
-        return
+        return 0
         
     import random
     proxy_pool = config.proxies.copy()
@@ -146,10 +162,24 @@ def perform_auto_rotation(config, mac_registry, singbox_manager):
         except Exception as e:
             logger.error(f"[AutoRotate] Failed to apply routing after auto rotate: {e}")
 
+    # Cập nhật state để API endpoint có thể query
+    _rotate_state["last_rotate_time"] = _time.time()
+    _rotate_state["last_rotate_count"] = len(rotated)
+    _rotate_state["total_rotations"] += 1
+    return len(rotated)
+
+
 async def auto_rotate_loop(app):
-    """Vòng lặp chạy nền kiểm tra và thực hiện xoay proxy tự động."""
+    """Vòng lặp chạy nền kiểm tra và thực hiện xoay proxy tự động theo chu kỳ phút.
+    
+    Dùng _rotate_state["last_rotate_time"] thay vì local variable để các API endpoint
+    có thể:
+    - Đọc countdown (rotation-status)
+    - Reset timer (rotation-reset / rotate-all thủ công)
+    """
     import time
-    last_rotate_time = time.time()
+    # Ghi thời điểm khởi động là last_rotate_time để countdown bắt đầu từ startup
+    _rotate_state["last_rotate_time"] = time.time()
     
     while True:
         await asyncio.sleep(10)  # Check mỗi 10 giây
@@ -169,14 +199,14 @@ async def auto_rotate_loop(app):
             continue
 
         if config.auto_rotate_minutes > 0:
-            elapsed_minutes = (time.time() - last_rotate_time) / 60.0
+            last_rotate = _rotate_state["last_rotate_time"]
+            elapsed_minutes = (time.time() - last_rotate) / 60.0
             if elapsed_minutes >= config.auto_rotate_minutes:
                 logger.info(f"[AutoRotate] Time trigger: {config.auto_rotate_minutes} mins reached. Rotating all proxies...")
                 try:
                     perform_auto_rotation(config, mac_registry, singbox_manager)
                 except Exception as err:
                     logger.error(f"[AutoRotate] Error performing auto rotation: {err}")
-                last_rotate_time = time.time()
 
 async def update_check_loop():
     """Vòng lặp chạy nền kiểm tra bản cập nhật mới định kỳ — CHỈ kiểm tra, không tự áp

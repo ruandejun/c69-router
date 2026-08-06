@@ -713,6 +713,92 @@ def rotate_all_devices(
     }
 
 
+@router.get("/rotation-status")
+def get_rotation_status(config=Depends(get_config)):
+    """Trạng thái xoay proxy tự động: countdown, lần xoay gần nhất, lần tiếp theo.
+    
+    Returns:
+    - enabled: True nếu auto_rotate_minutes > 0
+    - interval_minutes: Số phút giữa 2 lần xoay
+    - last_rotate_time: Unix timestamp lần xoay gần nhất (0 = chưa xoay)
+    - next_rotate_time: Unix timestamp lần xoay tiếp theo (null nếu disabled)
+    - elapsed_minutes: Số phút đã trôi qua kể từ lần xoay cuối
+    - remaining_minutes: Số phút còn lại đến lần xoay tiếp theo
+    - last_rotate_count: Số thiết bị đã xoay lần gần nhất
+    - total_rotations: Tổng số lần xoay từ khi khởi động
+    """
+    from app.main import _rotate_state
+    import time
+
+    now = time.time()
+    interval = config.auto_rotate_minutes
+    enabled = interval > 0
+    last_t = _rotate_state["last_rotate_time"]
+
+    elapsed_secs = now - last_t if last_t > 0 else 0.0
+    elapsed_minutes = round(elapsed_secs / 60.0, 2)
+
+    if enabled and last_t > 0:
+        next_t = last_t + interval * 60
+        remaining_secs = max(0.0, next_t - now)
+        remaining_minutes = round(remaining_secs / 60.0, 2)
+    else:
+        next_t = None
+        remaining_minutes = None
+
+    return {
+        "enabled": enabled,
+        "interval_minutes": interval,
+        "last_rotate_time": last_t if last_t > 0 else None,
+        "next_rotate_time": next_t,
+        "elapsed_minutes": elapsed_minutes,
+        "remaining_minutes": remaining_minutes,
+        "last_rotate_count": _rotate_state["last_rotate_count"],
+        "total_rotations": _rotate_state["total_rotations"],
+    }
+
+
+@router.post("/trigger-rotate")
+def trigger_rotate_now(
+    config=Depends(get_config),
+    mac_registry=Depends(get_mac_registry),
+    singbox_manager=Depends(get_singbox_manager),
+):
+    """Trigger xoay proxy ngay lập tức cho tất cả thiết bị và reset countdown.
+    
+    Giống với /rotate-all nhưng:
+    - Luôn reset countdown về 0 (kể cả khi disabled)
+    - Được thiết kế cho thành phần UI "Xoay ngay" có countdown hiển thị liên tục.
+    """
+    from app.main import perform_auto_rotation, _rotate_state
+    import time
+
+    if not mac_registry:
+        raise HTTPException(status_code=503, detail="MAC registry not available")
+
+    if not config.proxies or len(config.proxies) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Cần ít nhất 2 proxy để xoay."
+        )
+
+    try:
+        count = perform_auto_rotation(config, mac_registry, singbox_manager)
+        # perform_auto_rotation đã cập nhật _rotate_state, nhưng nếu count == 0
+        # (không có device nào được gán proxy) vẫn reset countdown.
+        if count == 0:
+            _rotate_state["last_rotate_time"] = time.time()
+    except Exception as e:
+        logger.error(f"[Proxies] trigger-rotate error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "status": "success",
+        "rotated": count,
+        "message": f"Xoay thành công {count} thiết bị. Countdown được reset.",
+    }
+
+
 @router.get("/check-blacklist/{proxy_id}")
 def check_proxy_blacklist(
     proxy_id: str,
