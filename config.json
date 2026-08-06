@@ -630,5 +630,6 @@
       "proxy_id": null,
       "proxy_port": 10118
     }
-  ]
+  ],
+  "lan_gateway_ip": "192.168.10.1"
 }
