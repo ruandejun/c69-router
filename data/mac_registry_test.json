@@ -1,0 +1,9 @@
+{
+  "AA:BB:CC:DD:EE:FF": {
+    "ip": "192.168.10.101",
+    "name": "Phone-1",
+    "proxy_id": "test_proxy",
+    "first_seen": 1782485083,
+    "last_seen": 1782485083
+  }
+}

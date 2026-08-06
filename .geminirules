@@ -1,0 +1,14 @@
+# Workspace Guidelines & Rules
+
+All actions and commands in this workspace must adhere to the global rule definitions in:
+`C:\Users\Admin\.gemini\GEMINI.md`
+
+## Enforced Playbooks & Skills
+Before running commands or modifying files, you MUST cross-reference the corresponding skill guidelines in the local library:
+`C:\Users\Admin\.gemini\config\plugins\antigravity-awesome-skills\skills`
+
+Specifically:
+- Clarify ambiguous requirements first: `ask-questions-if-underspecified`
+- Planning before coding: `planning-with-files` / `concise-planning`
+- Coding & bugs: `test-driven-development` & `systematic-debugging`
+- Commit naming: `git-pushing`

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Environment and Secrets
+.env
+*.env
+
+# Logs
+*.log
+router_manager.log
+sing-box.log
+sing-box-err.log
+sing-box-out.log
+sing-box.pid
+
+# Build / PyInstaller artifacts
+build/
+dist/
+*.spec
+*.exe
+*.dll
+
+# Binary & Config artifacts
+sing-box.exe
+wintun.dll
+sing-box-config.json
+
+# Scratch & Temporary files
+scratch/
+Wi-Fi-*.xml

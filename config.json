@@ -1,0 +1,634 @@
+{
+  "dhcp_range_start": "192.168.10.10",
+  "dhcp_range_end": "192.168.10.250",
+  "dns_server": "local",
+  "lan_interface": "Ethernet 3",
+  "wan_interface": "Ethernet",
+  "auto_rotate_minutes": 0,
+  "routing_mode": "tun",
+  "bypass_domains": [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16"
+  ],
+  "proxies": [
+    {
+      "id": "proxy_149_19_197_252_55262",
+      "type": "socks5",
+      "host": "149.19.197.252",
+      "port": 55262,
+      "username": "AzScwi",
+      "password": "WHetNP",
+      "tun_interface": "tun0",
+      "tun_ip": "10.255.1.1",
+      "gateway": "10.255.1.2",
+      "routing_table": 100,
+      "status": "Live",
+      "latency": 3723
+    },
+    {
+      "id": "proxy_23_95_45_66_15805",
+      "type": "socks5",
+      "host": "23.95.45.66",
+      "port": 15805,
+      "username": "OvtYUz",
+      "password": "UvIfgc",
+      "tun_interface": "tun1",
+      "tun_ip": "10.255.2.1",
+      "gateway": "10.255.2.2",
+      "routing_table": 101,
+      "status": "Live",
+      "latency": 4543
+    }
+  ],
+  "devices": [
+    {
+      "mac": "CE:4F:2F:5D:26:27",
+      "ip": "192.168.137.13",
+      "name": "Device 192.168.137.13",
+      "proxy_id": null,
+      "proxy_port": 10013
+    },
+    {
+      "mac": "3A:B6:FD:A9:DA:97",
+      "ip": "192.168.137.17",
+      "name": "Device 192.168.137.17",
+      "proxy_id": null,
+      "proxy_port": 10017
+    },
+    {
+      "mac": "E6:8C:EC:D9:EB:49",
+      "ip": "192.168.137.29",
+      "name": "Device 192.168.137.29",
+      "proxy_id": null,
+      "proxy_port": 10029
+    },
+    {
+      "mac": "DE:B2:58:00:20:14",
+      "ip": "192.168.137.35",
+      "name": "Device 192.168.137.35",
+      "proxy_id": null,
+      "proxy_port": 10035
+    },
+    {
+      "mac": "46:A1:64:87:19:67",
+      "ip": "192.168.137.36",
+      "name": "Device 192.168.137.36",
+      "proxy_id": null,
+      "proxy_port": 10036
+    },
+    {
+      "mac": "CE:72:A9:4D:C6:1C",
+      "ip": "192.168.137.15",
+      "name": "Device 192.168.137.15",
+      "proxy_id": null,
+      "proxy_port": 10040
+    },
+    {
+      "mac": "5E:3D:AC:D6:33:28",
+      "ip": "192.168.137.45",
+      "name": "Device 192.168.137.45",
+      "proxy_id": null,
+      "proxy_port": 10045
+    },
+    {
+      "mac": "8E:77:AF:35:44:DF",
+      "ip": "192.168.137.48",
+      "name": "Device 192.168.137.48",
+      "proxy_id": null,
+      "proxy_port": 10048
+    },
+    {
+      "mac": "2A:25:24:2F:03:AE",
+      "ip": "192.168.137.61",
+      "name": "Device 192.168.137.61",
+      "proxy_id": null,
+      "proxy_port": 10061
+    },
+    {
+      "mac": "BE:3A:94:AF:4B:FE",
+      "ip": "192.168.137.62",
+      "name": "Device 192.168.137.62",
+      "proxy_id": null,
+      "proxy_port": 10062
+    },
+    {
+      "mac": "FA:75:11:9F:B6:6E",
+      "ip": "192.168.137.71",
+      "name": "Device 192.168.137.71",
+      "proxy_id": null,
+      "proxy_port": 10071
+    },
+    {
+      "mac": "A6:86:54:99:0B:86",
+      "ip": "192.168.137.74",
+      "name": "Device 192.168.137.74",
+      "proxy_id": null,
+      "proxy_port": 10074
+    },
+    {
+      "mac": "66:56:4D:28:B5:B8",
+      "ip": "192.168.137.17",
+      "name": "Device 192.168.137.17",
+      "proxy_id": null,
+      "proxy_port": 10082
+    },
+    {
+      "mac": "62:5C:CF:19:6C:41",
+      "ip": "192.168.137.83",
+      "name": "Device 192.168.137.83",
+      "proxy_id": null,
+      "proxy_port": 10083
+    },
+    {
+      "mac": "4E:EC:0C:6B:86:24",
+      "ip": "192.168.137.84",
+      "name": "Device 192.168.137.84",
+      "proxy_id": null,
+      "proxy_port": 10084
+    },
+    {
+      "mac": "F6:9C:A3:27:B1:C4",
+      "ip": "192.168.137.85",
+      "name": "Device 192.168.137.85",
+      "proxy_id": null,
+      "proxy_port": 10085
+    },
+    {
+      "mac": "C2:04:BC:D3:5C:80",
+      "ip": "192.168.137.92",
+      "name": "Device 192.168.137.92",
+      "proxy_id": null,
+      "proxy_port": 10092
+    },
+    {
+      "mac": "E2:C8:4E:44:06:50",
+      "ip": "192.168.137.95",
+      "name": "Device 192.168.137.95",
+      "proxy_id": null,
+      "proxy_port": 10095
+    },
+    {
+      "mac": "06:9C:97:C4:11:3C",
+      "ip": "192.168.137.98",
+      "name": "Device 192.168.137.98",
+      "proxy_id": null,
+      "proxy_port": 10098
+    },
+    {
+      "mac": "4E:A4:AE:57:57:34",
+      "ip": "192.168.137.102",
+      "name": "Device 192.168.137.102",
+      "proxy_id": null,
+      "proxy_port": 10102
+    },
+    {
+      "mac": "9E:43:30:2A:59:CA",
+      "ip": "192.168.137.103",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10103
+    },
+    {
+      "mac": "96:B1:2C:08:24:4C",
+      "ip": "192.168.137.124",
+      "name": "Device 192.168.137.124",
+      "proxy_id": null,
+      "proxy_port": 10124
+    },
+    {
+      "mac": "BA:82:A0:C3:AE:B6",
+      "ip": "192.168.137.128",
+      "name": "Device 192.168.137.128",
+      "proxy_id": null,
+      "proxy_port": 10128
+    },
+    {
+      "mac": "5E:BD:2D:4F:D0:11",
+      "ip": "192.168.137.132",
+      "name": "Device 192.168.137.132",
+      "proxy_id": null,
+      "proxy_port": 10132
+    },
+    {
+      "mac": "62:D0:54:0C:03:27",
+      "ip": "192.168.137.11",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10134
+    },
+    {
+      "mac": "C2:12:01:A2:2C:70",
+      "ip": "192.168.137.146",
+      "name": "Device 192.168.137.146",
+      "proxy_id": null,
+      "proxy_port": 10146
+    },
+    {
+      "mac": "34:3A:20:CF:C1:AA",
+      "ip": "192.168.137.10",
+      "name": "Device 192.168.137.10",
+      "proxy_id": null,
+      "proxy_port": 10147
+    },
+    {
+      "mac": "E6:60:80:5B:FF:DD",
+      "ip": "192.168.137.150",
+      "name": "Device 192.168.137.150",
+      "proxy_id": null,
+      "proxy_port": 10150
+    },
+    {
+      "mac": "EA:E3:A0:4E:F5:2C",
+      "ip": "192.168.137.151",
+      "name": "Device 192.168.137.151",
+      "proxy_id": null,
+      "proxy_port": 10151
+    },
+    {
+      "mac": "62:1F:AD:01:67:DC",
+      "ip": "192.168.137.154",
+      "name": "Device 192.168.137.154",
+      "proxy_id": null,
+      "proxy_port": 10154
+    },
+    {
+      "mac": "42:F5:13:27:CF:34",
+      "ip": "192.168.137.158",
+      "name": "Device 192.168.137.158",
+      "proxy_id": null,
+      "proxy_port": 10158
+    },
+    {
+      "mac": "36:54:9F:23:DE:F2",
+      "ip": "192.168.137.165",
+      "name": "Device 192.168.137.165",
+      "proxy_id": null,
+      "proxy_port": 10165
+    },
+    {
+      "mac": "3A:0D:AE:E7:5C:36",
+      "ip": "192.168.137.166",
+      "name": "Device 192.168.137.166",
+      "proxy_id": null,
+      "proxy_port": 10166
+    },
+    {
+      "mac": "32:18:03:74:FE:72",
+      "ip": "192.168.137.167",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10167
+    },
+    {
+      "mac": "5E:78:C3:88:9D:6B",
+      "ip": "192.168.137.172",
+      "name": "Device 192.168.137.172",
+      "proxy_id": null,
+      "proxy_port": 10172
+    },
+    {
+      "mac": "7E:2F:6C:02:02:14",
+      "ip": "192.168.137.197",
+      "name": "Device 192.168.137.197",
+      "proxy_id": null,
+      "proxy_port": 10197
+    },
+    {
+      "mac": "52:89:78:A7:62:4C",
+      "ip": "192.168.137.201",
+      "name": "Device 192.168.137.201",
+      "proxy_id": null,
+      "proxy_port": 10201
+    },
+    {
+      "mac": "BE:CC:01:8F:53:8A",
+      "ip": "192.168.137.212",
+      "name": "Device 192.168.137.212",
+      "proxy_id": null,
+      "proxy_port": 10212
+    },
+    {
+      "mac": "46:CD:4D:47:1E:07",
+      "ip": "192.168.137.227",
+      "name": "Device 192.168.137.227",
+      "proxy_id": null,
+      "proxy_port": 10227
+    },
+    {
+      "mac": "D6:B4:4F:EC:EE:F8",
+      "ip": "192.168.137.231",
+      "name": "Device 192.168.137.231",
+      "proxy_id": null,
+      "proxy_port": 10231
+    },
+    {
+      "mac": "52:75:FE:15:2F:6F",
+      "ip": "192.168.137.232",
+      "name": "Device 192.168.137.232",
+      "proxy_id": null,
+      "proxy_port": 10232
+    },
+    {
+      "mac": "16:E4:D3:9E:F5:47",
+      "ip": "192.168.137.236",
+      "name": "Device 192.168.137.236",
+      "proxy_id": null,
+      "proxy_port": 10236
+    },
+    {
+      "mac": "86:F9:F3:5D:58:94",
+      "ip": "192.168.137.242",
+      "name": "Device 192.168.137.242",
+      "proxy_id": null,
+      "proxy_port": 10242
+    },
+    {
+      "mac": "DE:B0:21:3E:A4:EB",
+      "ip": "192.168.137.246",
+      "name": "Device 192.168.137.246",
+      "proxy_id": null,
+      "proxy_port": 10246
+    },
+    {
+      "mac": "4E:0C:7C:83:44:96",
+      "ip": "192.168.137.3",
+      "name": "Device 192.168.137.3",
+      "proxy_id": null,
+      "proxy_port": 10003
+    },
+    {
+      "mac": "4E:1E:6E:38:8E:95",
+      "ip": "192.168.137.144",
+      "name": "Device 192.168.137.144",
+      "proxy_id": null,
+      "proxy_port": 10144
+    },
+    {
+      "mac": "1E:5D:5B:2F:A9:48",
+      "ip": "192.168.137.193",
+      "name": "Device 192.168.137.193",
+      "proxy_id": null,
+      "proxy_port": 10193
+    },
+    {
+      "mac": "CA:B1:ED:9E:F5:BE",
+      "ip": "192.168.137.211",
+      "name": "Device 192.168.137.211",
+      "proxy_id": null,
+      "proxy_port": 10211
+    },
+    {
+      "mac": "CA:96:DB:A2:D4:C5",
+      "ip": "192.168.137.235",
+      "name": "Device 192.168.137.235",
+      "proxy_id": null,
+      "proxy_port": 10235
+    },
+    {
+      "mac": "0E:B9:8A:90:F0:A5",
+      "ip": "192.168.137.113",
+      "name": "Device 192.168.137.113",
+      "proxy_id": null,
+      "proxy_port": 10113
+    },
+    {
+      "mac": "1E:F4:25:63:A2:67",
+      "ip": "192.168.137.213",
+      "name": "Device 192.168.137.213",
+      "proxy_id": null,
+      "proxy_port": 10213
+    },
+    {
+      "mac": "C2:6D:3B:3B:D6:B0",
+      "ip": "192.168.137.183",
+      "name": "Device 192.168.137.183",
+      "proxy_id": null,
+      "proxy_port": 10183
+    },
+    {
+      "mac": "BA:67:90:54:62:E3",
+      "ip": "192.168.137.171",
+      "name": "Device 192.168.137.171",
+      "proxy_id": null,
+      "proxy_port": 10171
+    },
+    {
+      "mac": "16:A3:BB:18:65:10",
+      "ip": "192.168.137.12",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10012
+    },
+    {
+      "mac": "FA:99:7B:C4:BE:49",
+      "ip": "192.168.137.14",
+      "name": "Device 192.168.137.14",
+      "proxy_id": null,
+      "proxy_port": 10014
+    },
+    {
+      "mac": "F6:7A:B9:31:3B:06",
+      "ip": "192.168.137.16",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10016
+    },
+    {
+      "mac": "46:CA:CF:EE:12:63",
+      "ip": "192.168.137.18",
+      "name": "Device 192.168.137.18",
+      "proxy_id": null,
+      "proxy_port": 10018
+    },
+    {
+      "mac": "46:5E:AE:85:52:1F",
+      "ip": "192.168.137.19",
+      "name": "Device 192.168.137.19",
+      "proxy_id": null,
+      "proxy_port": 10019
+    },
+    {
+      "mac": "02:81:21:03:69:A2",
+      "ip": "192.168.137.20",
+      "name": "Device 192.168.137.20",
+      "proxy_id": null,
+      "proxy_port": 10020
+    },
+    {
+      "mac": "DE:11:2B:3D:3F:68",
+      "ip": "192.168.137.21",
+      "name": "Device 192.168.137.21",
+      "proxy_id": null,
+      "proxy_port": 10021
+    },
+    {
+      "mac": "DE:E1:60:E9:0C:42",
+      "ip": "192.168.137.22",
+      "name": "Device 192.168.137.22",
+      "proxy_id": null,
+      "proxy_port": 10022
+    },
+    {
+      "mac": "52:41:53:20:B0:82:E2:07:E5:1A:00:00:00:00:00:00",
+      "ip": "192.168.137.23",
+      "name": "Admin-PC",
+      "proxy_id": null,
+      "proxy_port": 10023
+    },
+    {
+      "mac": "26:BD:5C:23:D2:AA",
+      "ip": "192.168.137.200",
+      "name": "Device 192.168.137.200",
+      "proxy_id": null,
+      "proxy_port": 10200
+    },
+    {
+      "mac": "00:15:5D:30:FD:43",
+      "ip": "192.168.10.100",
+      "name": "Admin-PC",
+      "proxy_id": null,
+      "proxy_port": 10100
+    },
+    {
+      "mac": "DA:37:49:49:D2:84",
+      "ip": "192.168.10.101",
+      "name": "Device 192.168.10.101",
+      "proxy_id": null,
+      "proxy_port": 10101
+    },
+    {
+      "mac": "8A:72:36:CB:BF:E8",
+      "ip": "192.168.10.102",
+      "name": "Device 192.168.10.102",
+      "proxy_id": null,
+      "proxy_port": 10102
+    },
+    {
+      "mac": "9E:48:3B:6E:E3:0F",
+      "ip": "192.168.10.103",
+      "name": "Device 192.168.10.103",
+      "proxy_id": null,
+      "proxy_port": 10103
+    },
+    {
+      "mac": "36:00:9F:B0:E5:F6",
+      "ip": "192.168.10.104",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10104
+    },
+    {
+      "mac": "A6:FA:EA:6A:EA:81",
+      "ip": "192.168.10.105",
+      "name": "Device 192.168.10.105",
+      "proxy_id": null,
+      "proxy_port": 10105
+    },
+    {
+      "mac": "B6:2A:34:84:B6:BE",
+      "ip": "192.168.10.106",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10106
+    },
+    {
+      "mac": "02:99:0E:07:3A:A2",
+      "ip": "192.168.10.107",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10107
+    },
+    {
+      "mac": "22:0B:10:F8:CB:79",
+      "ip": "192.168.10.108",
+      "name": "Device 192.168.10.108",
+      "proxy_id": null,
+      "proxy_port": 10108
+    },
+    {
+      "mac": "52:41:53:20:00:00:00:00:00:00:00:00:00:00:00:00",
+      "ip": "192.168.10.109",
+      "name": "Admin-PC",
+      "proxy_id": null,
+      "proxy_port": 10109
+    },
+    {
+      "mac": "04:D6:88:63:B7:04",
+      "ip": "192.168.100.1",
+      "name": "Device 192.168.100.1",
+      "proxy_id": null,
+      "proxy_port": 10001
+    },
+    {
+      "mac": "24:F5:AA:AE:5A:F2",
+      "ip": "192.168.100.15",
+      "name": "Device 192.168.100.15",
+      "proxy_id": null,
+      "proxy_port": 10015
+    },
+    {
+      "mac": "32:4B:57:7C:21:9C",
+      "ip": "192.168.10.110",
+      "name": "Device 192.168.10.110",
+      "proxy_id": null,
+      "proxy_port": 10110
+    },
+    {
+      "mac": "FA:96:64:0C:3B:BA",
+      "ip": "192.168.10.111",
+      "name": "Device 192.168.10.111",
+      "proxy_id": null,
+      "proxy_port": 10111
+    },
+    {
+      "mac": "86:58:28:62:E7:31",
+      "ip": "192.168.10.112",
+      "name": "Device 192.168.10.112",
+      "proxy_id": null,
+      "proxy_port": 10112
+    },
+    {
+      "mac": "B6:34:D6:87:F2:21",
+      "ip": "192.168.10.113",
+      "name": "Device 192.168.10.113",
+      "proxy_id": null,
+      "proxy_port": 10113
+    },
+    {
+      "mac": "B6:35:72:FF:AA:51",
+      "ip": "192.168.10.114",
+      "name": "Device 192.168.10.114",
+      "proxy_id": null,
+      "proxy_port": 10114
+    },
+    {
+      "mac": "16:A5:60:A8:EF:4E",
+      "ip": "192.168.10.115",
+      "name": "Device 192.168.10.115",
+      "proxy_id": null,
+      "proxy_port": 10115
+    },
+    {
+      "mac": "CE:7B:5F:8F:0C:DC",
+      "ip": "192.168.10.116",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10116
+    },
+    {
+      "mac": "FA:7B:20:52:62:9E",
+      "ip": "192.168.10.117",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10117
+    },
+    {
+      "mac": "B6:4A:F8:F6:C5:78",
+      "ip": "192.168.10.118",
+      "name": "iPhone",
+      "proxy_id": null,
+      "proxy_port": 10118
+    }
+  ]
+}
