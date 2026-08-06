@@ -57,7 +57,7 @@ def check_admin_elevation():
                 else:
                     new_args = ["-m", "uvicorn"] + args[1:]
             else:
-                new_args = ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+                new_args = ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000"]
             params = " ".join(f'"{a}"' for a in new_args)
 
         try:
@@ -86,7 +86,7 @@ from app.singbox_manager import SingBoxManager
 from app.dhcp_server import DHCPServer
 from app.dependencies import get_config, get_mac_registry, get_singbox_manager
 
-def setup_captive_portproxy(lan_ip: str):
+def setup_captive_portproxy(lan_ip: str, port: int = 9000):
     import subprocess
     # Xóa cấu hình cũ tránh trùng lặp
     subprocess.run(
@@ -97,10 +97,10 @@ def setup_captive_portproxy(lan_ip: str):
     subprocess.run(
         ["netsh", "interface", "portproxy", "add", "v4tov4", 
          "listenport=80", f"listenaddress={lan_ip}", 
-         "connectport=8000", "connectaddress=127.0.0.1"],
+         f"connectport={port}", "connectaddress=127.0.0.1"],
         capture_output=True
     )
-    logger.info(f"[Captive] Windows portproxy forward set up: 80 -> 8000 on address {lan_ip}")
+    logger.info(f"[Captive] Windows portproxy forward set up: 80 -> {port} on address {lan_ip}")
 
 def cleanup_captive_portproxy(lan_ip: str):
     import subprocess
@@ -742,7 +742,8 @@ async def lifespan(app: FastAPI):
 
     # 7. Setup Captive Portal portproxy on LAN IP
     try:
-        setup_captive_portproxy(config.lan_gateway_ip)
+        active_port = int(os.environ.get("GENROUTER_ACTIVE_PORT", "9000"))
+        setup_captive_portproxy(config.lan_gateway_ip, active_port)
     except Exception as e:
         logger.error(f"[Main] Setup captive portproxy error: {e}")
 

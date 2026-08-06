@@ -172,9 +172,9 @@ def setup_firewall_rules():
         }}
     }}
 
-    # API Port 8000
-    if (-not (Get-NetFirewallRule -DisplayName 'GenRouter API 8000' -ErrorAction SilentlyContinue)) {{
-        New-NetFirewallRule -DisplayName 'GenRouter API 8000' -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Enabled True -Profile Any
+    # API Ports 8000-9099
+    if (-not (Get-NetFirewallRule -DisplayName 'GenRouter API Ports' -ErrorAction SilentlyContinue)) {{
+        New-NetFirewallRule -DisplayName 'GenRouter API Ports' -Direction Inbound -Protocol TCP -LocalPort 8000-9099 -Action Allow -Enabled True -Profile Any
     }}
 
     # DHCP UDP 67/68

@@ -28,7 +28,8 @@ def get_proxy_pac(
     device = mac_registry.get_device_by_ip(client_ip) if mac_registry else None
 
     # Gateway IP from Host header
-    host_header = request.headers.get("host", f"{config.lan_gateway_ip}:8000")
+    active_port = os.environ.get("GENROUTER_ACTIVE_PORT", "9000")
+    host_header = request.headers.get("host", f"{config.lan_gateway_ip}:{active_port}")
     gateway_ip = host_header.split(":")[0]
 
     # Build PAC content — khi thiết bị có proxy, dùng sing-box TUN gateway
