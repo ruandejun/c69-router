@@ -678,6 +678,31 @@ class SingBoxManager:
             pass
         remove_nat_for_singbox(lan_subnet=_lan_subnet)
 
+        # Cleanup orphan TUN interface trước khi start để tránh lỗi:
+        # "Cannot create a file when that file already exists"
+        # Xảy ra khi server cũ bị kill đột ngột, TUN interface không được giải phóng.
+        try:
+            # Lấy tên tun-interface từ config (mặc định là "tun-in")
+            _tun_name = "tun-in"
+            try:
+                import json as _json
+                with open(SINGBOX_CONFIG, "r", encoding="utf-8") as _cf:
+                    _sb_cfg = _json.load(_cf)
+                for _inbound in _sb_cfg.get("inbounds", []):
+                    if _inbound.get("type") == "tun":
+                        _tun_name = _inbound.get("interface_name", _tun_name)
+                        break
+            except Exception:
+                pass
+            _r = subprocess.run(
+                ["netsh", "interface", "delete", "interface", f"name={_tun_name}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if _r.returncode == 0:
+                logger.info(f"[SingBox] Cleaned up orphan TUN interface '{_tun_name}' before start.")
+        except Exception as _e:
+            logger.debug(f"[SingBox] TUN cleanup (pre-start): {_e}")
+
         try:
             # Create PowerShell script to start sing-box elevated
             ps_script = os.path.join(PROJECT_DIR, "_start_singbox.ps1")

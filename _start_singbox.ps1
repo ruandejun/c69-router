@@ -1,2 +1,0 @@
-$proc = Start-Process "D:\Workspace\Python\c69-router\sing-box.exe" -ArgumentList "run -c `"D:\Workspace\Python\c69-router\sing-box-config.json`"" -WorkingDirectory "D:\Workspace\Python\c69-router" -NoNewWindow -RedirectStandardOutput "D:\Workspace\Python\c69-router\sing-box-out.log" -RedirectStandardError "D:\Workspace\Python\c69-router\sing-box-err.log" -PassThru
-$proc.Id | Out-File -FilePath "D:\Workspace\Python\c69-router\sing-box.pid" -Encoding ascii -NoNewline

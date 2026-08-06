@@ -1,6 +1,6 @@
 {
   "lan_interface": "Ethernet 3",
-  "lan_gateway_ip": "192.168.10.1",
+  "lan_gateway_ip": "169.254.112.173",
   "lan_subnet_mask": "255.255.255.0",
   "wan_interface": "Ethernet",
   "tun_interface": "gen-tun-new",
@@ -14,7 +14,7 @@
     "172.16.0.0/12",
     "192.168.0.0/16"
   ],
-  "auto_rotate_minutes": 0,
+  "auto_rotate_minutes": 5,
   "auto_assign_new_devices": false,
   "auto_assign_mode": "balance",
   "block_direct_devices": false,
