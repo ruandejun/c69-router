@@ -603,6 +603,11 @@ async def lifespan(app: FastAPI):
         logger.info(f"[Main] ✓ LAN interface '{config.lan_interface}' hợp lệ.")
 
     # 4. Setup network (LAN static IP, IP forwarding, firewall, binaries)
+    # Đảm bảo lan_gateway_ip có giá trị mặc định hợp lệ trước khi dùng
+    if not config.lan_gateway_ip:
+        config.lan_gateway_ip = "192.168.10.1"
+        save_config(config)
+        logger.info(f"[Main] lan_gateway_ip không có trong config, dùng mặc định: 192.168.10.1")
     try:
         setup_network(
             lan_interface=config.lan_interface,
@@ -655,16 +660,30 @@ async def lifespan(app: FastAPI):
         from app.error_reporter import report_error
         report_error("NAT", "NAT rule not found after startup", level="warning")
 
-    # 4.5 Auto-detect actual LAN interface IP
-    from app.network_setup import get_lan_ip
+    # 4.5 Verify và enforce LAN interface IP từ config
+    # CONFIG là source of truth — nếu interface IP khác config, ENFORCE config lên interface
+    # (không phải ngược lại như trước đây)
+    from app.network_setup import get_lan_ip, ensure_lan_ip_assigned
     actual_lan_ip = get_lan_ip(config.lan_interface)
     if actual_lan_ip != config.lan_gateway_ip:
         logger.warning(
-            f"[Main] ⚠ LAN interface '{config.lan_interface}' has IP {actual_lan_ip} "
-            f"but config says {config.lan_gateway_ip}. Using actual: {actual_lan_ip}"
+            f"[Main] LAN interface '{config.lan_interface}' co IP {actual_lan_ip} "
+            f"khac config {config.lan_gateway_ip}. Dang enforce config IP len interface..."
         )
-        config.lan_gateway_ip = actual_lan_ip
-        save_config(config)
+        try:
+            ensure_lan_ip_assigned(config.lan_interface, config.lan_gateway_ip, config.lan_subnet_mask)
+            # Verify lại sau khi enforce
+            actual_lan_ip = get_lan_ip(config.lan_interface)
+            if actual_lan_ip == config.lan_gateway_ip:
+                logger.info(f"[Main] Enforce IP thanh cong: {config.lan_interface} = {config.lan_gateway_ip}")
+            else:
+                logger.warning(
+                    f"[Main] Enforce IP that bai (can quyen Admin). "
+                    f"Interface van la {actual_lan_ip}, tiep tuc voi config IP {config.lan_gateway_ip}."
+                )
+        except Exception as _e:
+            logger.warning(f"[Main] Enforce IP error: {_e}. Tiep tuc voi config IP.")
+
 
     logger.info(f"[Main] LAN Gateway IP: {config.lan_gateway_ip}")
     logger.info(f"[Main] DHCP Pool: {config.dhcp_range_start} → {config.dhcp_range_end}")
