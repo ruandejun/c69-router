@@ -36,6 +36,7 @@ def _dpn_set_progress(mac: str, **kwargs):
 class BulkImportPayload(BaseModel):
     text: str
     dns_server: str = "1.1.1.1"   # DNS server áp dụng cho tất cả proxies trong batch này
+    replace_all: bool = False      # True = xóa toàn bộ proxy cũ trước khi import (thay thế hoàn toàn)
 
 
 class BulkAssign1to1Payload(BaseModel):
@@ -188,6 +189,42 @@ def remove_die_proxies(
     }
 
 
+@router.post("/clean-orphaned-registry")
+def clean_orphaned_registry(
+    config=Depends(get_config),
+    mac_registry=Depends(get_mac_registry),
+    singbox_manager=Depends(get_singbox_manager),
+):
+    """Xóa proxy_id không còn tồn tại trong config khỏi mac_registry.
+
+    Dùng sau khi bulk import proxy mới thay thế toàn bộ danh sách cũ.
+    Tự động được gọi nội bộ khi bulk import hoặc remove-die.
+    """
+    if not mac_registry:
+        raise HTTPException(status_code=503, detail="MAC registry not available")
+
+    valid_ids = {p.id for p in config.proxies}
+    cleared = []
+    for device in mac_registry.get_all_devices():
+        if device.proxy_id and device.proxy_id not in valid_ids:
+            mac_registry.set_proxy(device.mac, None)
+            cleared.append({"mac": device.mac, "ip": device.ip, "old_proxy_id": device.proxy_id})
+            logger.info(f"[Proxies] Cleared orphaned proxy {device.proxy_id} from device {device.mac}")
+
+    if cleared and singbox_manager:
+        try:
+            singbox_manager.update_config(config)
+            singbox_manager.hot_reload()
+        except Exception as e:
+            logger.error(f"[Proxies] Failed to apply after clean-orphaned: {e}")
+
+    return {
+        "status": "success",
+        "cleared_count": len(cleared),
+        "cleared": cleared,
+    }
+
+
 class UpdateProxyPayload(BaseModel):
     """Payload để cập nhật thông tin một proxy đã có."""
     type: str = "socks5"
@@ -241,15 +278,28 @@ def update_proxy(
 def bulk_import(
     payload: BulkImportPayload,
     config=Depends(get_config),
+    mac_registry=Depends(get_mac_registry),
     singbox_manager=Depends(get_singbox_manager),
 ):
     lines = payload.text.strip().split("\n")
     added_count = 0
     skipped_count = 0
     added_ids = []
+    cleared_orphans = 0
 
-    # Optional dns_server nếu caller muốn set ngay khi import
     dns_server = getattr(payload, 'dns_server', None) or '1.1.1.1'
+    replace_all = getattr(payload, 'replace_all', False)
+
+    # Nếu replace_all: xóa toàn bộ proxy cũ, clear orphaned registry trước
+    if replace_all:
+        old_ids = {p.id for p in config.proxies}
+        if mac_registry:
+            for device in mac_registry.get_all_devices():
+                if device.proxy_id and device.proxy_id in old_ids:
+                    mac_registry.set_proxy(device.mac, None)
+                    cleared_orphans += 1
+        config.proxies = []
+        logger.info(f"[Proxies] replace_all: cleared {len(old_ids)} proxies and {cleared_orphans} device assignments")
 
     for line in lines:
         line = line.strip()
@@ -281,6 +331,16 @@ def bulk_import(
 
     save_config(config)
 
+    # Auto-clean orphaned registry sau khi import (không phải replace_all cũng check)
+    # Vì proxy cũ có thể đã bị xóa trước đó mà registry chưa được clean
+    if mac_registry and not replace_all:
+        valid_ids = {p.id for p in config.proxies}
+        for device in mac_registry.get_all_devices():
+            if device.proxy_id and device.proxy_id not in valid_ids:
+                mac_registry.set_proxy(device.mac, None)
+                cleared_orphans += 1
+                logger.info(f"[Proxies] Auto-cleared orphaned proxy {device.proxy_id} from {device.mac}")
+
     if added_count > 0 and singbox_manager:
         try:
             singbox_manager.update_config(config)
@@ -290,9 +350,10 @@ def bulk_import(
 
     return {
         "status": "success",
-        "message": f"Imported {added_count} proxies ({skipped_count} skipped/duplicate)",
+        "message": f"Imported {added_count} proxies ({skipped_count} skipped/duplicate), cleared {cleared_orphans} orphaned assignments",
         "added_count": added_count,
         "skipped_count": skipped_count,
+        "cleared_orphans": cleared_orphans,
         "proxy_ids": added_ids,
     }
 

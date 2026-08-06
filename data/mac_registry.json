@@ -2,15 +2,15 @@
   "1C:28:AF:CB:06:92": {
     "ip": "",
     "name": "Device 192.168.10.102",
-    "proxy_id": "proxy_107_175_208_79_6020",
+    "proxy_id": null,
     "first_seen": 1782880974,
     "last_seen": 1783076023,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "80:32:53:07:64:21": {
     "ip": "192.168.10.47",
     "name": "Spider",
-    "proxy_id": "proxy_148_135_148_168_8165",
+    "proxy_id": "proxy_38_154_205_171_5439",
     "first_seen": 1783054689,
     "last_seen": 1786010968,
     "proxy_decided": true
@@ -18,26 +18,26 @@
   "AC:A7:F1:51:35:25": {
     "ip": "",
     "name": "Device 192.168.10.110 (ARP)",
-    "proxy_id": "proxy_166_88_83_117_6774",
+    "proxy_id": null,
     "first_seen": 1783054689,
     "last_seen": 1783054689,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "EE:2E:55:0F:AA:D9": {
     "ip": "",
     "name": "",
-    "proxy_id": "proxy_31_59_18_144_6725",
+    "proxy_id": null,
     "first_seen": 1783061181,
     "last_seen": 1783063111,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "F2:2E:99:78:19:3C": {
     "ip": "",
     "name": "iPhone",
-    "proxy_id": "proxy_199_180_9_141_6161",
+    "proxy_id": null,
     "first_seen": 1783061189,
     "last_seen": 1783064089,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "B6:CF:1E:0C:54:2F": {
     "ip": "",
@@ -66,18 +66,18 @@
   "E2:EE:AC:41:1F:E8": {
     "ip": "",
     "name": "",
-    "proxy_id": "proxy_142_147_128_71_6571",
+    "proxy_id": null,
     "first_seen": 1783063561,
     "last_seen": 1783063563,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "AA:BB:CC:DD:EE:FF": {
     "ip": "",
     "name": "DPN_Test_Device",
-    "proxy_id": "proxy_103_47_52_165_8207",
+    "proxy_id": null,
     "first_seen": 1783064998,
     "last_seen": 1783222557,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "82:3F:0F:5E:5F:E9": {
     "ip": "",
@@ -90,34 +90,34 @@
   "86:F5:12:48:1B:62": {
     "ip": "",
     "name": "",
-    "proxy_id": "dpn_199_66_183_226_4145",
+    "proxy_id": null,
     "first_seen": 1783073898,
     "last_seen": 1783073899,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "36:2F:DD:F9:23:30": {
     "ip": "",
     "name": "",
-    "proxy_id": "proxy_23_26_94_209_6191",
+    "proxy_id": null,
     "first_seen": 1783074062,
     "last_seen": 1783074064,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "EE:0A:23:2F:99:F9": {
     "ip": "",
     "name": "",
-    "proxy_id": "proxy_31_58_10_239_6207",
+    "proxy_id": null,
     "first_seen": 1783074320,
     "last_seen": 1783075773,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "C2:F2:BA:73:E6:D3": {
     "ip": "",
     "name": "",
-    "proxy_id": "proxy_45_41_178_240_6461",
+    "proxy_id": null,
     "first_seen": 1783074525,
     "last_seen": 1783074624,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "5E:B6:1D:64:68:FB": {
     "ip": "",
@@ -130,312 +130,312 @@
   "EE:A0:B0:D4:6F:B8": {
     "ip": "",
     "name": "",
-    "proxy_id": "proxy_180_149_35_90_17783",
+    "proxy_id": null,
     "first_seen": 1783075023,
     "last_seen": 1783075048,
-    "proxy_decided": true
+    "proxy_decided": false
   },
   "82:0B:BF:BB:0E:16": {
     "ip": "192.168.10.10",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_206_206_119_253_6164",
+    "proxy_decided": true,
     "first_seen": 1786009338,
     "last_seen": 1786011018
   },
   "1E:AD:5C:B7:58:36": {
     "ip": "192.168.10.11",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_198_23_128_6_5634",
+    "proxy_decided": true,
     "first_seen": 1786009369,
     "last_seen": 1786009555
   },
   "7A:5A:FB:78:87:25": {
     "ip": "192.168.10.12",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_104_253_59_28_6451",
+    "proxy_decided": true,
     "first_seen": 1786009375,
     "last_seen": 1786010566
   },
   "32:A7:85:0B:93:58": {
     "ip": "192.168.10.13",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_209_127_96_89_6363",
+    "proxy_decided": true,
     "first_seen": 1786009412,
     "last_seen": 1786010011
   },
   "76:17:06:2C:1E:BA": {
     "ip": "192.168.10.14",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_198_37_118_20_5479",
+    "proxy_decided": true,
     "first_seen": 1786009428,
     "last_seen": 1786010631
   },
   "86:F3:F1:1B:4F:83": {
     "ip": "192.168.10.15",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_142_147_242_162_6141",
+    "proxy_decided": true,
     "first_seen": 1786009460,
     "last_seen": 1786009668
   },
   "22:87:4F:00:ED:44": {
     "ip": "192.168.10.16",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_23_95_255_222_6806",
+    "proxy_decided": true,
     "first_seen": 1786009472,
     "last_seen": 1786010058
   },
   "EE:AF:34:06:86:CB": {
     "ip": "192.168.10.17",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_23_27_208_204_5914",
+    "proxy_decided": true,
     "first_seen": 1786009491,
     "last_seen": 1786009786
   },
   "4A:DE:57:FB:43:81": {
     "ip": "192.168.10.18",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_206_206_124_42_6623",
+    "proxy_decided": true,
     "first_seen": 1786009505,
     "last_seen": 1786009506
   },
   "0E:E1:40:FB:EF:26": {
     "ip": "192.168.10.19",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_206_83_131_239_5615",
+    "proxy_decided": true,
     "first_seen": 1786009513,
     "last_seen": 1786010047
   },
   "76:B6:E4:F1:A7:2C": {
     "ip": "192.168.10.20",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_31_58_29_72_6038",
+    "proxy_decided": true,
     "first_seen": 1786009552,
     "last_seen": 1786009552
   },
   "0E:4F:6E:E4:D7:D3": {
     "ip": "192.168.10.21",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_206_206_119_50_5961",
+    "proxy_decided": true,
     "first_seen": 1786009643,
     "last_seen": 1786010436
   },
   "6A:79:32:32:80:C5": {
     "ip": "192.168.10.22",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_38_154_233_132_5542",
+    "proxy_decided": true,
     "first_seen": 1786009644,
     "last_seen": 1786010859
   },
   "4A:1E:70:C9:86:4A": {
     "ip": "192.168.10.23",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_136_0_127_221_5930",
+    "proxy_decided": true,
     "first_seen": 1786009645,
     "last_seen": 1786010887
   },
   "62:BE:51:C8:8C:F6": {
     "ip": "192.168.10.24",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_31_57_87_142_5827",
+    "proxy_decided": true,
     "first_seen": 1786009661,
     "last_seen": 1786009662
   },
   "F2:40:7F:09:03:2E": {
     "ip": "192.168.10.25",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_91_198_95_107_8408",
+    "proxy_decided": true,
     "first_seen": 1786009661,
     "last_seen": 1786009791
   },
   "6E:A6:C7:DE:3D:30": {
     "ip": "192.168.10.26",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_50_114_117_227_7210",
+    "proxy_decided": true,
     "first_seen": 1786009662,
     "last_seen": 1786009672
   },
   "0E:BE:E4:C4:C5:38": {
     "ip": "192.168.10.27",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_142_147_242_178_6157",
+    "proxy_decided": true,
     "first_seen": 1786009677,
     "last_seen": 1786010351
   },
   "98:CA:33:28:56:67": {
     "ip": "192.168.10.28",
     "name": "iPhone",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_173_244_41_36_6220",
+    "proxy_decided": true,
     "first_seen": 1786009679,
     "last_seen": 1786010418
   },
   "14:D0:0D:C8:7A:3E": {
     "ip": "192.168.10.29",
     "name": "iPhone",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_142_147_245_135_5826",
+    "proxy_decided": true,
     "first_seen": 1786009771,
     "last_seen": 1786009772
   },
   "2A:04:30:7D:34:83": {
     "ip": "192.168.10.30",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_199_180_9_249_6269",
+    "proxy_decided": true,
     "first_seen": 1786009835,
     "last_seen": 1786011002
   },
   "7E:FF:83:8B:3B:EE": {
     "ip": "192.168.10.31",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_154_29_239_104_6143",
+    "proxy_decided": true,
     "first_seen": 1786009857,
     "last_seen": 1786011003
   },
   "F6:EB:9D:C9:C9:FF": {
     "ip": "192.168.10.32",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_185_216_105_197_6774",
+    "proxy_decided": true,
     "first_seen": 1786009864,
     "last_seen": 1786009865
   },
   "56:4C:BB:3F:5A:81": {
     "ip": "192.168.10.33",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_23_27_208_136_5846",
+    "proxy_decided": true,
     "first_seen": 1786009887,
     "last_seen": 1786009992
   },
   "B6:60:85:9F:6B:5B": {
     "ip": "192.168.10.34",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_199_180_8_90_5801",
+    "proxy_decided": true,
     "first_seen": 1786009929,
     "last_seen": 1786009930
   },
   "66:23:BB:FD:1D:4B": {
     "ip": "192.168.10.35",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_23_26_95_113_5595",
+    "proxy_decided": true,
     "first_seen": 1786009961,
     "last_seen": 1786009962
   },
   "DE:F3:AB:79:7D:E1": {
     "ip": "192.168.10.36",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_38_154_217_15_7206",
+    "proxy_decided": true,
     "first_seen": 1786009990,
     "last_seen": 1786009991
   },
   "BA:A8:34:C7:74:89": {
     "ip": "192.168.10.37",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_206_232_103_120_6277",
+    "proxy_decided": true,
     "first_seen": 1786010353,
     "last_seen": 1786010354
   },
   "DA:FD:75:E5:6C:0B": {
     "ip": "192.168.10.38",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_31_57_78_210_5594",
+    "proxy_decided": true,
     "first_seen": 1786010379,
     "last_seen": 1786010630
   },
   "D2:FE:E4:9E:93:83": {
     "ip": "192.168.10.39",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_23_27_208_72_5782",
+    "proxy_decided": true,
     "first_seen": 1786010417,
     "last_seen": 1786010419
   },
   "DA:F4:5B:22:A2:FB": {
     "ip": "192.168.10.40",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_45_115_194_172_5868",
+    "proxy_decided": true,
     "first_seen": 1786010633,
     "last_seen": 1786010710
   },
   "E2:5D:AF:F8:31:C6": {
     "ip": "192.168.10.41",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_206_206_124_77_6658",
+    "proxy_decided": true,
     "first_seen": 1786010733,
     "last_seen": 1786010832
   },
   "02:25:F8:74:4F:4A": {
     "ip": "192.168.10.42",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_206_206_124_121_6702",
+    "proxy_decided": true,
     "first_seen": 1786010899,
     "last_seen": 1786010901
   },
   "36:14:8E:97:01:7C": {
     "ip": "192.168.10.43",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_64_64_127_143_6096",
+    "proxy_decided": true,
     "first_seen": 1786010913,
     "last_seen": 1786010922
   },
   "82:7D:62:D3:94:1D": {
     "ip": "192.168.10.44",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_50_114_8_201_7186",
+    "proxy_decided": true,
     "first_seen": 1786010922,
     "last_seen": 1786010923
   },
   "EE:37:A9:CC:DE:F0": {
     "ip": "192.168.10.45",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_64_64_127_120_6073",
+    "proxy_decided": true,
     "first_seen": 1786010964,
     "last_seen": 1786010965
   },
   "6E:A2:11:91:4C:E3": {
     "ip": "192.168.10.46",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_136_0_127_87_5796",
+    "proxy_decided": true,
     "first_seen": 1786010966,
     "last_seen": 1786010976
   },
   "FA:47:F4:6B:1B:06": {
     "ip": "192.168.10.48",
     "name": "",
-    "proxy_id": null,
-    "proxy_decided": false,
+    "proxy_id": "proxy_173_0_9_126_5709",
+    "proxy_decided": true,
     "first_seen": 1786010976,
     "last_seen": 1786010977
   }
