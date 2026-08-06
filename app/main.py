@@ -172,12 +172,12 @@ def perform_auto_rotation(config, mac_registry, singbox_manager):
 async def auto_rotate_loop(app):
     """Vòng lặp chạy nền kiểm tra và thực hiện xoay proxy tự động theo chu kỳ phút.
     
-    Dùng _rotate_state["last_rotate_time"] thay vì local variable để các API endpoint
-    có thể:
-    - Đọc countdown (rotation-status)
-    - Reset timer (rotation-reset / rotate-all thủ công)
+    Hỗ trợ 2 chế độ:
+    1. Global: config.auto_rotate_minutes > 0 → xoay TẤT CẢ device theo global timer
+    2. Per-device: device.rotate_minutes > 0 → xoay RIÊNG thiết bị đó theo timer riêng
     """
     import time
+    import random
     # Ghi thời điểm khởi động là last_rotate_time để countdown bắt đầu từ startup
     _rotate_state["last_rotate_time"] = time.time()
     
@@ -190,23 +190,61 @@ async def auto_rotate_loop(app):
         if not mac_registry or not singbox_manager:
             continue
 
-        # Dùng config đang giữ trong SingBoxManager (được các route đồng bộ qua
-        # update_config() ngay sau mỗi save_config() liên quan) thay vì tự load_config()
-        # đọc lại file JSON mỗi 10s vĩnh viễn — vòng lặp này chạy suốt 24/7 nên I/O thừa
-        # tích luỹ theo thời gian, dù nhỏ vẫn là 1 nguồn hao mòn không cần thiết.
         config = singbox_manager.config
         if not config:
             continue
 
+        now = time.time()
+
+        # ── Global rotation: xoay TẤT CẢ device ──
         if config.auto_rotate_minutes > 0:
             last_rotate = _rotate_state["last_rotate_time"]
-            elapsed_minutes = (time.time() - last_rotate) / 60.0
+            elapsed_minutes = (now - last_rotate) / 60.0
             if elapsed_minutes >= config.auto_rotate_minutes:
                 logger.info(f"[AutoRotate] Time trigger: {config.auto_rotate_minutes} mins reached. Rotating all proxies...")
                 try:
                     perform_auto_rotation(config, mac_registry, singbox_manager)
                 except Exception as err:
                     logger.error(f"[AutoRotate] Error performing auto rotation: {err}")
+
+        # ── Per-device rotation: xoay từng device có rotate_minutes riêng ──
+        if not config.proxies or len(config.proxies) < 2:
+            continue
+
+        try:
+            from app.routes.proxies import _device_rotate_state
+        except ImportError:
+            continue
+
+        all_devices = mac_registry.get_all_devices()
+        for dev in all_devices:
+            if not dev.rotate_minutes or dev.rotate_minutes <= 0:
+                continue  # 0 = theo global, đã xử lý ở trên
+            if not dev.proxy_id or not dev.ip:
+                continue  # Không có proxy hoặc IP → bỏ qua
+
+            dev_state = _device_rotate_state.get(dev.mac, {})
+            last_t = dev_state.get("last_rotate_time", _rotate_state["last_rotate_time"])
+            elapsed_m = (now - last_t) / 60.0
+
+            if elapsed_m < dev.rotate_minutes:
+                continue  # Chưa đến giờ
+
+            # Xoay proxy cho thiết bị này
+            try:
+                live_proxies = [p for p in config.proxies if p.status == "Live"] or config.proxies
+                candidates = [p for p in live_proxies if p.id != dev.proxy_id] or live_proxies
+                new_proxy = random.choice(candidates)
+                mac_registry.set_proxy(dev.mac, new_proxy.id)
+                singbox_manager.update_multiple_devices_routing([(dev.ip, new_proxy.id)])
+                _device_rotate_state[dev.mac] = {
+                    "last_rotate_time": now,
+                    "total_rotations": dev_state.get("total_rotations", 0) + 1,
+                }
+                logger.info(f"[AutoRotate] Per-device {dev.mac} ({dev.name}): {dev.proxy_id} → {new_proxy.id} (every {dev.rotate_minutes}m)")
+            except Exception as e:
+                logger.error(f"[AutoRotate] Per-device rotate error for {dev.mac}: {e}")
+
 
 async def update_check_loop():
     """Vòng lặp chạy nền kiểm tra bản cập nhật mới định kỳ — CHỈ kiểm tra, không tự áp

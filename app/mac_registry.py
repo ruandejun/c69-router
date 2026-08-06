@@ -323,6 +323,7 @@ class MACRegistry:
                     ip=info.get("ip", ""),
                     name=info.get("name", ""),
                     proxy_id=info.get("proxy_id"),
+                    rotate_minutes=info.get("rotate_minutes", 0),
                     first_seen=info.get("first_seen", 0),
                     last_seen=info.get("last_seen", 0),
                 ))
@@ -335,7 +336,7 @@ class MACRegistry:
             info = self._data.get(mac)
             if info:
                 return DeviceConfig(mac=mac, **{
-                    k: info.get(k) for k in ["ip", "name", "proxy_id", "first_seen", "last_seen"]
+                    k: info.get(k) for k in ["ip", "name", "proxy_id", "rotate_minutes", "first_seen", "last_seen"]
                     if info.get(k) is not None
                 })
         return None
@@ -347,7 +348,7 @@ class MACRegistry:
             if mac and mac in self._data:
                 info = self._data[mac]
                 return DeviceConfig(mac=mac, **{
-                    k: info.get(k) for k in ["ip", "name", "proxy_id", "first_seen", "last_seen"]
+                    k: info.get(k) for k in ["ip", "name", "proxy_id", "rotate_minutes", "first_seen", "last_seen"]
                     if info.get(k) is not None
                 })
         return None
@@ -359,6 +360,17 @@ class MACRegistry:
             if mac in self._data:
                 self._data[mac]["name"] = name
                 self.save()
+
+    def set_rotate_minutes(self, mac: str, rotate_minutes: int):
+        """Cài đặt rotate_minutes cho device. 0 = theo global, >0 = override riêng."""
+        mac = mac.upper()
+        with self._lock:
+            if mac in self._data:
+                self._data[mac]["rotate_minutes"] = max(0, rotate_minutes)
+                self.save()
+                logger.info(f"[MACRegistry] Set rotate_minutes for {mac} -> {rotate_minutes}")
+            else:
+                logger.warning(f"[MACRegistry] Cannot set rotate_minutes: MAC {mac} not found")
 
     def remove_device(self, mac: str):
         """Xóa device khỏi registry."""

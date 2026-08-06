@@ -799,7 +799,199 @@ def trigger_rotate_now(
     }
 
 
-@router.get("/check-blacklist/{proxy_id}")
+# ─── Per-Device Rotation State ─────────────────────────────────────────────
+# {mac: {"last_rotate_time": float, "total_rotations": int}}
+_device_rotate_state: dict = {}
+
+
+@router.post("/set-device-rotation")
+def set_device_rotation(
+    payload: dict,
+    mac_registry=Depends(get_mac_registry),
+):
+    """Cài đặt rotate_minutes cho 1 hoặc nhiều thiết bị.
+
+    Payload:
+      - macs: list[str] — danh sách MAC cần set. Nếu rỗng/null = áp dụng cho TẤT CẢ.
+      - rotate_minutes: int — 0=theo global, >0=override riêng cho device đó.
+    """
+    if not mac_registry:
+        raise HTTPException(status_code=503, detail="MAC registry not available")
+
+    rotate_minutes = int(payload.get("rotate_minutes", 0))
+    macs = payload.get("macs") or []
+
+    if not macs:
+        # Áp dụng toàn bộ thiết bị
+        all_devices = mac_registry.get_all_devices()
+        macs = [d.mac for d in all_devices]
+
+    updated = []
+    not_found = []
+    for mac in macs:
+        mac = mac.upper()
+        dev = mac_registry.get_device_by_mac(mac)
+        if not dev:
+            not_found.append(mac)
+            continue
+        mac_registry.set_rotate_minutes(mac, rotate_minutes)
+        # Reset per-device timer khi thay đổi setting
+        _device_rotate_state[mac] = {
+            "last_rotate_time": __import__("time").time(),
+            "total_rotations": _device_rotate_state.get(mac, {}).get("total_rotations", 0),
+        }
+        updated.append(mac)
+
+    return {
+        "status": "success",
+        "updated": len(updated),
+        "updated_macs": updated,
+        "not_found": not_found,
+        "rotate_minutes": rotate_minutes,
+        "message": f"Đã cài {rotate_minutes} phút cho {len(updated)} thiết bị."
+                   f"{' (0=theo global)' if rotate_minutes == 0 else ''}",
+    }
+
+
+@router.get("/device-rotation-status")
+def get_device_rotation_status(
+    config=Depends(get_config),
+    mac_registry=Depends(get_mac_registry),
+):
+    """Trả về trạng thái xoay proxy cho từng thiết bị + trạng thái global.
+
+    Returns list of devices với các field:
+    - mac, name, ip, proxy_id
+    - rotate_minutes: số phút rotate riêng (0 = theo global)
+    - effective_minutes: số phút thực tế đang dùng (global nếu rotate_minutes=0)
+    - enabled: True nếu effective_minutes > 0
+    - remaining_minutes: phút còn lại đến lần xoay tiếp theo
+    - last_rotate_time: timestamp lần xoay gần nhất
+    - total_rotations: tổng số lần đã xoay
+    """
+    from app.main import _rotate_state
+    import time
+
+    if not mac_registry:
+        raise HTTPException(status_code=503, detail="MAC registry not available")
+
+    now = time.time()
+    global_interval = config.auto_rotate_minutes
+    global_last = _rotate_state.get("last_rotate_time", 0)
+
+    all_devices = mac_registry.get_all_devices()
+    devices_status = []
+
+    for dev in all_devices:
+        mac = dev.mac
+        device_interval = dev.rotate_minutes  # 0 = theo global
+        effective_interval = device_interval if device_interval > 0 else global_interval
+
+        dev_state = _device_rotate_state.get(mac, {})
+        # Nếu device chưa có state riêng → dùng global last_rotate_time
+        last_t = dev_state.get("last_rotate_time", global_last)
+        total_rot = dev_state.get("total_rotations", 0)
+
+        enabled = effective_interval > 0
+        if enabled and last_t > 0:
+            next_t = last_t + effective_interval * 60
+            remaining_secs = max(0.0, next_t - now)
+            remaining_minutes = round(remaining_secs / 60.0, 2)
+        else:
+            next_t = None
+            remaining_minutes = None
+
+        devices_status.append({
+            "mac": mac,
+            "name": dev.name,
+            "ip": dev.ip,
+            "proxy_id": dev.proxy_id,
+            "rotate_minutes": device_interval,
+            "effective_minutes": effective_interval,
+            "enabled": enabled,
+            "uses_global": device_interval == 0,
+            "last_rotate_time": last_t if last_t > 0 else None,
+            "next_rotate_time": next_t,
+            "remaining_minutes": remaining_minutes,
+            "total_rotations": total_rot,
+        })
+
+    return {
+        "global": {
+            "enabled": global_interval > 0,
+            "interval_minutes": global_interval,
+            "last_rotate_time": global_last if global_last > 0 else None,
+            "remaining_minutes": _rotate_state.get("remaining_minutes"),
+            "total_rotations": _rotate_state.get("total_rotations", 0),
+        },
+        "devices": devices_status,
+    }
+
+
+@router.post("/rotate-device/{mac}")
+def rotate_single_device(
+    mac: str,
+    config=Depends(get_config),
+    mac_registry=Depends(get_mac_registry),
+    singbox_manager=Depends(get_singbox_manager),
+):
+    """Xoay proxy ngay lập tức cho 1 thiết bị cụ thể (theo MAC).
+
+    Chọn ngẫu nhiên proxy khác với proxy hiện tại từ pool live.
+    """
+    import random, time
+    mac = mac.upper()
+
+    if not mac_registry:
+        raise HTTPException(status_code=503, detail="MAC registry not available")
+
+    dev = mac_registry.get_device_by_mac(mac)
+    if not dev:
+        raise HTTPException(status_code=404, detail=f"Device {mac} not found")
+
+    if not dev.proxy_id:
+        raise HTTPException(status_code=400, detail="Device không có proxy được gán")
+
+    live_proxies = [p for p in config.proxies if p.status == "Live"]
+    if len(live_proxies) < 2:
+        live_proxies = config.proxies  # fallback dùng tất cả
+    if len(live_proxies) < 2:
+        raise HTTPException(status_code=400, detail="Cần ít nhất 2 proxy để xoay")
+
+    # Chọn proxy mới khác proxy cũ
+    candidates = [p for p in live_proxies if p.id != dev.proxy_id]
+    if not candidates:
+        candidates = live_proxies
+    new_proxy = random.choice(candidates)
+    old_proxy_id = dev.proxy_id
+
+    mac_registry.set_proxy(mac, new_proxy.id)
+
+    # Áp dụng routing ngay
+    if singbox_manager and dev.ip:
+        try:
+            singbox_manager.update_multiple_devices_routing([(dev.ip, new_proxy.id)])
+        except Exception as e:
+            logger.error(f"[Proxies] rotate-device {mac} routing error: {e}")
+
+    # Cập nhật per-device state
+    _device_rotate_state[mac] = {
+        "last_rotate_time": time.time(),
+        "total_rotations": _device_rotate_state.get(mac, {}).get("total_rotations", 0) + 1,
+    }
+
+    return {
+        "status": "success",
+        "mac": mac,
+        "old_proxy_id": old_proxy_id,
+        "new_proxy_id": new_proxy.id,
+        "new_proxy": f"{new_proxy.host}:{new_proxy.port}",
+        "message": f"Xoay proxy cho {dev.name or mac} thanh cong.",
+    }
+
+
+@router.post("/check-blacklist/{proxy_id}")
+
 def check_proxy_blacklist(
     proxy_id: str,
     config=Depends(get_config),

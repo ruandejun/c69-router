@@ -55,8 +55,10 @@ class DeviceConfig(BaseModel):
     ip: str                                      # Current DHCP IP
     name: str = ""                               # Hostname / display name
     proxy_id: Optional[str] = None               # Proxy binding (persist qua reconnect)
+    rotate_minutes: int = 0                      # Per-device rotation: 0=theo global, >0=override riêng
     first_seen: int = Field(default_factory=lambda: int(time.time()))
     last_seen: int = Field(default_factory=lambda: int(time.time()))
+
 
 
 class AppConfig(BaseModel):
