@@ -271,10 +271,16 @@ try {
     }
 }
 
-# ─── 5. Mo Windows Firewall cho API (8000) + DHCP (67/68) ──────────
-Invoke-Step "Mo Windows Firewall cho port API (8000) va DHCP (67/68)" {
-    if (-not (Get-NetFirewallRule -DisplayName 'GenRouter API 8000' -ErrorAction SilentlyContinue)) {
-        New-NetFirewallRule -DisplayName 'GenRouter API 8000' -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Enabled True -Profile Any | Out-Null
+# ─── 5. Mo Windows Firewall cho API (9000) + DHCP (67/68) ──────────
+Invoke-Step "Mo Windows Firewall cho port API (9000-9099) va DHCP (67/68)" {
+    # Xoa rule cu port 8000 neu con ton tai
+    if (Get-NetFirewallRule -DisplayName 'GenRouter API 8000' -ErrorAction SilentlyContinue) {
+        Remove-NetFirewallRule -DisplayName 'GenRouter API 8000' -ErrorAction SilentlyContinue
+        Write-Host "Da xoa rule cu port 8000"
+    }
+    # Tao rule moi cho port 9000-9099 (fallback range)
+    if (-not (Get-NetFirewallRule -DisplayName 'GenRouter API 9000' -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName 'GenRouter API 9000' -Direction Inbound -Protocol TCP -LocalPort 9000-9099 -Action Allow -Enabled True -Profile Any | Out-Null
     }
     if (-not (Get-NetFirewallRule -DisplayName 'GenRouter DHCP 67' -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -DisplayName 'GenRouter DHCP 67' -Direction Inbound -Protocol UDP -LocalPort 67 -Action Allow -Enabled True -Profile Any | Out-Null
@@ -282,8 +288,9 @@ Invoke-Step "Mo Windows Firewall cho port API (8000) va DHCP (67/68)" {
     if (-not (Get-NetFirewallRule -DisplayName 'GenRouter DHCP 68' -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -DisplayName 'GenRouter DHCP 68' -Direction Inbound -Protocol UDP -LocalPort 68 -Action Allow -Enabled True -Profile Any | Out-Null
     }
-    Write-Host "OK: Firewall rules da san sang"
+    Write-Host "OK: Firewall rules da san sang (API port 9000-9099, DHCP 67/68)"
 }
+
 
 # ─── 6. Tai sing-box.exe + wintun.dll neu chua co (cung thu muc voi script) ──
 Invoke-Step "Tai sing-box.exe va wintun.dll (neu chua co san)" {
