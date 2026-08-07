@@ -114,10 +114,43 @@ class AppConfig(BaseModel):
 
 # ─── Config Load / Save ─────────────────────────────────
 
+def _generate_hotspot_ssid() -> str:
+    """Tạo SSID WiFi hotspot unique cho máy này, dạng 'C69-Router-XXXX'.
+
+    Dùng 4 ký tự cuối của hostname (loại bỏ ký tự đặc biệt) để tạo suffix nhất quán:
+    - Không đổi giữa các lần restart
+    - Khác nhau giữa các máy trong cùng mạng
+    Nếu hostname quá ngắn/không dùng được → dùng 4 hex ngẫu nhiên cố định.
+    """
+    import socket
+    import re
+    try:
+        hostname = socket.gethostname()
+        # Chỉ giữ chữ cái + số, bỏ ký tự đặc biệt
+        clean = re.sub(r'[^A-Za-z0-9]', '', hostname)
+        if len(clean) >= 4:
+            suffix = clean[-4:].upper()
+        elif len(clean) > 0:
+            suffix = clean.upper().ljust(4, '0')
+        else:
+            raise ValueError("empty hostname")
+    except Exception:
+        import random
+        suffix = '{:04X}'.format(random.randint(0, 0xFFFF))
+    return f"C69-Router-{suffix}"
+
+
 def load_config() -> AppConfig:
     """Load config from data/config.json. Creates default if not exists."""
     if not os.path.exists(CONFIG_PATH):
-        config = AppConfig()
+        # ── FIRST RUN: tạo config mặc định với hotspot tự động bật ──
+        # SSID unique theo hostname để không trùng giữa các máy,
+        # password mặc định dễ nhớ, user có thể đổi trong Settings sau.
+        config = AppConfig(
+            wifi_hotspot_enabled=True,
+            wifi_hotspot_ssid=_generate_hotspot_ssid(),
+            wifi_hotspot_password="matkhau123",
+        )
         save_config(config)
         return config
 
