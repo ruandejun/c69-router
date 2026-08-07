@@ -1635,9 +1635,33 @@ try {{
     }}
 
     # Trang thai hien tai: 0=Off, 1=On, 2=InTransition
-    $state = $mgr.TetheringOperationalState
+    $state = [int]$mgr.TetheringOperationalState
     Write-Output "DIAG:OperationalState=$state"
     if ($state -eq 1) {{ Write-Output "ALREADY_ACTIVE"; exit 0 }}
+
+    # Xu ly InTransition stuck (Windows bug: icssvc bi treo -> tat ca WinRT op fail Status=3)
+    # Fix: restart icssvc service, doi 2s, lay lai manager tu profile moi
+    if ($state -eq 2) {{
+        Write-Output "DIAG:InTransition detected - waiting 5s..."
+        $waitDeadline = [System.DateTime]::Now.AddSeconds(5)
+        while ([int]$mgr.TetheringOperationalState -eq 2 -and [System.DateTime]::Now -lt $waitDeadline) {{
+            [System.Threading.Thread]::Sleep(500)
+        }}
+        $state = [int]$mgr.TetheringOperationalState
+        if ($state -eq 2) {{
+            Write-Output "DIAG:Still InTransition - restarting icssvc..."
+            Restart-Service -Name icssvc -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            # Lay lai manager sau khi restart service
+            $profile2 = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+            if ($null -ne $profile2) {{
+                $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile2)
+            }}
+            $state = [int]$mgr.TetheringOperationalState
+            Write-Output "DIAG:State after icssvc restart: $state"
+        }}
+        if ($state -eq 1) {{ Write-Output "ALREADY_ACTIVE"; exit 0 }}
+    }}
 
     # Cau hinh SSID + password
     $cfg = $mgr.GetCurrentAccessPointConfiguration()
