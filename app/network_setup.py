@@ -1714,8 +1714,20 @@ try {{
 
         if "ERROR:NoInternetProfile" in out:
             logger.warning("[Hotspot] No internet connection profile - connect WiFi/Ethernet first.")
+        elif "0x80070032" in out or "not supported" in out.lower():
+            logger.warning(
+                "[Hotspot] ✗ HR=0x80070032 'The request is not supported'.\n"
+                "          → Common cause: Hyper-V installed and blocking Mobile Hotspot.\n"
+                "          → Fix options:\n"
+                "            1. Tắt Hyper-V: 'bcdedit /set hypervisorlaunchtype off' → reboot\n"
+                "            2. Cắm thêm USB WiFi adapter (card riêng, Hyper-V không block)\n"
+                "            3. Bật Mobile Hotspot thủ công từ Windows Settings trước khi chạy app"
+            )
         elif "EXCEPTION" in out:
             logger.warning(f"[Hotspot] WinRT exception: {out}")
+        elif "CapabilityBlocked" in out:
+            reason = out.split("ERROR:CapabilityBlocked:")[-1].strip().split("\n")[0] if "CapabilityBlocked:" in out else out
+            logger.warning(f"[Hotspot] Tethering blocked by system: {reason}")
         else:
             logger.warning(f"[Hotspot] Mobile Hotspot failed: {out or err}")
         return False
