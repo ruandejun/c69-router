@@ -241,8 +241,36 @@ class MACRegistry:
 
     # ─── Lease Management ────────────────────────────────
 
+    @staticmethod
+    def _is_auto_generated_name(name: str, ip: str = "") -> bool:
+        """Kiểm tra xem tên có phải tên tự động (không phải do user đặt thủ công) không.
+        
+        Tên auto-generated: rỗng, "Device {ip}", "Device {ip} (ARP)", hoặc dạng
+        hostname DHCP thuần tuý như "iPhone", "android-xxxx".
+        Tên KHÔNG phải auto: bất kỳ tên nào không khớp các pattern trên → do user đặt thủ công.
+        """
+        if not name:
+            return True
+        # Kiểm tra pattern "Device {ip}" và "Device {ip} (ARP)"
+        if ip and (name == f"Device {ip}" or name == f"Device {ip} (ARP)"):
+            return True
+        # Pattern chung "Device x.x.x.x" dù không biết ip cụ thể
+        import re
+        if re.match(r'^Device \d+\.\d+\.\d+\.\d+( \(ARP\))?$', name):
+            return True
+        return False
+
     def update_lease(self, mac: str, ip: str, name: str = ""):
-        """Cập nhật/tạo lease khi DHCP ACK."""
+        """Cập nhật/tạo lease khi DHCP ACK.
+        
+        Quy tắc ghi tên:
+        - Thiết bị MỚI (chưa có trong registry): ghi tên DHCP/hostname như bình thường.
+        - Thiết bị ĐÃ BIẾT:
+          - Nếu tên hiện tại là auto-generated (rỗng, "Device {ip}", "Device {ip} (ARP)"):
+            ghi đè bằng hostname DHCP nếu có (cải thiện tên tự động).
+          - Nếu tên hiện tại là tên thủ công (user đặt): KHÔNG ghi đè —
+            hostname DHCP là thông tin kỹ thuật, tên thủ công là label user chọn.
+        """
         mac = mac.upper()
         now = int(time.time())
         with self._lock:
@@ -256,10 +284,23 @@ class MACRegistry:
                 old_ip = self._data[mac].get("ip", "")
                 if old_ip and old_ip != ip:
                     self._ip_to_mac.pop(old_ip, None)
+                # Lưu tên hiện tại TRƯỚC khi update IP để so sánh đúng với IP cũ
+                current_name = self._data[mac].get("name", "")
                 self._data[mac]["ip"] = ip
                 self._data[mac]["last_seen"] = now
                 if name:
-                    self._data[mac]["name"] = name
+                    # old_ip: IP cũ (trước update) để match pattern "Device {old_ip}"
+                    # Nếu không có old_ip (thiết bị lần đầu có IP), dùng IP mới
+                    _check_ip = old_ip or ip
+                    if self._is_auto_generated_name(current_name, _check_ip):
+                        # Tên hiện tại là auto → ghi đè bằng hostname DHCP (cải thiện)
+                        self._data[mac]["name"] = name
+                    else:
+                        # Tên hiện tại là thủ công → giữ nguyên, không ghi đè
+                        logger.debug(
+                            f"[MACRegistry] Preserved custom name '{current_name}' for {mac} "
+                            f"(DHCP hostname: '{name}' ignored)"
+                        )
             else:
                 self._data[mac] = {
                     "ip": ip,

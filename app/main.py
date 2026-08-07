@@ -752,14 +752,39 @@ async def lifespan(app: FastAPI):
         _dhcp_server = None
         logger.info("[Main] DHCP Server disabled in config.")
 
-    # 7. Apply routing (start sing-box)
+    # 7. Apply routing (start sing-box) — SYNCHRONOUS: chờ thật sự lên trước khi yield.
+    # Trước đây: apply_routing() → hot_reload() → debounce timer 1s → fire-and-forget.
+    # Vấn đề: app yield và bắt đầu nhận traffic TRONG KHI sing-box chưa start xong (~5-15s),
+    # trong khoảng này NAT đã bị remove_nat_for_singbox() gỡ mà TUN chưa lên → thiết bị
+    # đi thẳng ra internet với IP thật (lộ IP gốc). Fix: gọi reload_now() blocking trực
+    # tiếp (không qua debounce), sau đó poll is_running tối đa 30s trước khi yield.
     if platform.system() == "Windows":
         try:
-            _singbox_manager.apply_routing(config)
+            logger.info("[Main] Starting sing-box (synchronous, waiting for TUN to be ready)...")
+            _singbox_manager.reload_now()
         except Exception as e:
             logger.error(f"[Main] Initial routing error: {e}")
             from app.error_reporter import report_error
             report_error("Startup", f"Initial routing error: {e}", level="critical", exc=e)
+
+        # Chờ sing-box thực sự running (tối đa 30s) trước khi tiếp tục yield.
+        # reload_now() đã blocking qua start() nhưng cần verify lại vì start() có thể
+        # hoàn thành trước khi process sẵn sàng nhận traffic (VD: Wintun đang init).
+        _sb_wait_start = asyncio.get_event_loop().time()
+        _sb_max_wait = 30.0  # giây
+        while not _singbox_manager.is_running:
+            _elapsed = asyncio.get_event_loop().time() - _sb_wait_start
+            if _elapsed >= _sb_max_wait:
+                logger.warning(
+                    f"[Main] ⚠ sing-box chưa running sau {_sb_max_wait:.0f}s — tiếp tục "
+                    f"startup (thiết bị có thể tạm bị lộ IP). Kiểm tra sing-box-err.log."
+                )
+                break
+            await asyncio.sleep(0.5)
+        else:
+            logger.info(
+                f"[Main] ✓ sing-box verified running — TUN proxy active, traffic được bảo vệ."
+            )
 
     # 8. Set DNS consistent on LAN + TUN interfaces (chỉ áp dụng cho chính máy host)
     # Đảm bảo Ethernet 3 và TUN adapter cùng dùng 1.1.1.1 / 1.0.0.1
@@ -810,6 +835,7 @@ async def lifespan(app: FastAPI):
     # 9. Start Auto-Update check background loop (chỉ kiểm tra, không tự áp dụng)
     asyncio.create_task(update_check_loop())
 
+    logger.info("[Main] ✓ Startup complete — app ready to serve traffic.")
     yield  # App is running
 
     # ── Shutdown ──
