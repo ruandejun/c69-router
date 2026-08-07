@@ -1,17 +1,45 @@
 """
-build_router.py — Build, nén và upload c69-router lên Cloudflare R2 CDN
-(fallback: SFTP lên server riêng nếu R2 chưa cấu hình hoặc upload lỗi).
+build_router.py — Cross-platform build, zip, upload cho c69-router
 
-Dùng chung Cloudflare R2 bucket với QHTDautomation (đọc từ .env, xem
-d:\\Workspace\\Python\\QHTDautomation\\build_and_deploy.py để biết cách setup R2).
+Dùng chung 1 script cho mọi OS:
+  Windows  → dist/c69-router.exe  → c69-router.zip    → R2: c69-router.zip
+  Linux    → dist/c69-router      → c69-router.zip    → R2: c69-router-linux.zip
+  macOS    → dist/c69-router      → c69-router.zip    → R2: c69-router-macos.zip
+
+Cách chạy:
+  python build_router.py           # build + upload R2
+  python build_router.py --local   # build only, no upload
 """
 import os
 import sys
+import platform
 import subprocess
 import zipfile
 import time
+import shutil
 
-# Tự động load biến từ .env cùng thư mục (chứa CF_ACCOUNT_ID/CF_API_TOKEN/CF_R2_BUCKET/CF_R2_PUBLIC_URL)
+_PLATFORM = platform.system()   # 'Windows' | 'Linux' | 'Darwin'
+_IS_WIN   = _PLATFORM == "Windows"
+_IS_MAC   = _PLATFORM == "Darwin"
+_IS_LIN   = _PLATFORM == "Linux"
+
+# ── Binary names ──────────────────────────────────────────────
+EXE_NAME        = "c69-router.exe"     if _IS_WIN else "c69-router"
+UPDATER_NAME    = "c69update.exe"      if _IS_WIN else "c69update"
+DIST_EXE        = os.path.join("dist", EXE_NAME)
+DIST_UPDATER    = os.path.join("dist", UPDATER_NAME)
+
+# ── R2 ZIP key per platform ───────────────────────────────────
+if _IS_WIN:
+    ZIP_KEY = "c69-router.zip"          # Windows: giữ tên cũ để tương thích
+elif _IS_MAC:
+    ZIP_KEY = "c69-router-macos.zip"
+else:
+    ZIP_KEY = "c69-router-linux.zip"
+
+ZIP_PATH = os.path.join("dist", ZIP_KEY)
+
+# ── Cloudflare R2 config (đọc từ .env) ───────────────────────
 _here = os.path.dirname(os.path.abspath(__file__))
 _env_path = os.path.join(_here, ".env")
 try:
@@ -27,123 +55,178 @@ except ImportError:
                     _k, _v = _line.split('=', 1)
                     os.environ.setdefault(_k.strip(), _v.strip())
 
-sys.stdout.reconfigure(encoding='utf-8')
-
-# ============================================================
-# CONFIG
-# ============================================================
 CLOUDFLARE_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-CLOUDFLARE_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
-R2_BUCKET_NAME = os.environ.get("CF_R2_BUCKET", "c69-releases")
-R2_PUBLIC_URL = os.environ.get("CF_R2_PUBLIC_URL", "")
+CLOUDFLARE_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
+R2_BUCKET_NAME        = os.environ.get("CF_R2_BUCKET", "c69-releases")
+R2_PUBLIC_URL         = os.environ.get("CF_R2_PUBLIC_URL", "")
 
-# Fallback: server riêng qua SFTP (dùng khi chưa có R2 config hoặc R2 upload lỗi)
-FALLBACK_SFTP_HOST = "167.233.89.198"
-FALLBACK_SFTP_USER = "root"
-FALLBACK_SFTP_PASS = "fJU9JtkbELfi"
+FALLBACK_SFTP_HOST  = "167.233.89.198"
+FALLBACK_SFTP_USER  = "root"
+FALLBACK_SFTP_PASS  = "fJU9JtkbELfi"
 FALLBACK_REMOTE_PATH = "/root/storagon/static"
 
-ZIP_FILENAME = "c69-router.zip"
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding='utf-8')
 
 
-def build():
-    pyinstaller_bin = os.path.join(".venv", "Scripts", "pyinstaller.exe")
-    if not os.path.exists(pyinstaller_bin):
-        pyinstaller_bin = "pyinstaller"
+# ══════════════════════════════════════════════════════════════
+# STEP 1: Kill running process (prevent PermissionError)
+# ══════════════════════════════════════════════════════════════
 
-    print("=== Bắt đầu chạy PyInstaller cho c69-router ===")
-    cmd = [pyinstaller_bin, "c69-router.spec", "--clean"]
-    print(f"Running command: {' '.join(cmd)}")
-    result = subprocess.run(cmd, shell=True)
-    if result.returncode != 0:
-        print("PyInstaller build failed!")
-        sys.exit(1)
-    print("=== PyInstaller Build Successful! ===")
-
-    # c69update.exe: helper tự-cập-nhật, dùng chung cơ chế với C69Automation (đợi PID cha
-    # thoát rồi thay exe) — build lại cùng lúc để luôn kèm theo trong zip release, không
-    # thì router tải bản mới về nhưng không cài được (thiếu updater).
-    print("=== Bắt đầu chạy PyInstaller cho c69update (updater helper) ===")
-    cmd_updater = [pyinstaller_bin, "c69update.spec", "--clean"]
-    print(f"Running command: {' '.join(cmd_updater)}")
-    result_updater = subprocess.run(cmd_updater, shell=True)
-    if result_updater.returncode != 0:
-        print("PyInstaller build failed (c69update)!")
-        sys.exit(1)
-    print("=== PyInstaller Build Successful (c69update)! ===")
-
-    exe_path = os.path.join("dist", "c69-router.exe")
-    updater_path = os.path.join("dist", "c69update.exe")
-    zip_path = os.path.join("dist", ZIP_FILENAME)
-
-    if not os.path.exists(exe_path):
-        print(f"Lỗi: Không tìm thấy file thực thi tại {exe_path}")
-        sys.exit(1)
-    if not os.path.exists(updater_path):
-        print(f"Lỗi: Không tìm thấy updater tại {updater_path}")
-        sys.exit(1)
-
-    print(f"Đang nén {exe_path} thành {zip_path}...")
-    try:
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(exe_path, "c69-router.exe")
-            zipf.write(updater_path, "c69update.exe")
-            # Kèm script setup máy mới — dù giờ c69-router.exe đã tự động sửa
-            # BFE/Firewall/ICS lúc khởi động, vẫn giữ để chẩn đoán thủ công nếu cần.
-            for setup_file in ("setup_windows.bat", "setup_windows.ps1"):
-                if os.path.exists(setup_file):
-                    zipf.write(setup_file, setup_file)
-        print("=== Nén file thành công! ===")
-    except Exception as e:
-        print(f"Lỗi khi nén file: {e}")
-        sys.exit(1)
-
-    url = upload_to_r2(zip_path)
-    if not url:
-        print("\n=== R2 upload không khả dụng, chuyển sang SFTP (fallback) ===")
-        url = upload_to_server_sftp(zip_path)
-
-    if url:
-        print(f"\n=== HOÀN TẤT — URL tải: {url} ===")
+def kill_running():
+    print(f"=== [{_PLATFORM}] Kill running c69-router before build ===")
+    if _IS_WIN:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-Process c69-router -ErrorAction SilentlyContinue | Stop-Process -Force; "
+             "Start-Sleep -Milliseconds 1500"],
+            shell=True, capture_output=True
+        )
     else:
-        print("\n=== LỖI: Cả R2 lẫn SFTP đều thất bại ===")
+        subprocess.run(["pkill", "-f", "c69-router"], capture_output=True)
+        time.sleep(0.5)
+
+    if os.path.exists(DIST_EXE):
+        try:
+            os.remove(DIST_EXE)
+            print(f"  Deleted: {DIST_EXE}")
+        except Exception as e:
+            print(f"  Warning: Could not delete {DIST_EXE}: {e}")
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 2: Find PyInstaller binary
+# ══════════════════════════════════════════════════════════════
+
+def find_pyinstaller():
+    if _IS_WIN:
+        candidates = [
+            os.path.join(".venv", "Scripts", "pyinstaller.exe"),
+            "pyinstaller",
+        ]
+    else:
+        candidates = [
+            os.path.join(".venv", "bin", "pyinstaller"),
+            os.path.join(os.path.expanduser("~"), ".local", "bin", "pyinstaller"),
+            "pyinstaller",
+        ]
+    for c in candidates:
+        if os.path.exists(c) or c == "pyinstaller":
+            return c
+    return "pyinstaller"
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 3: PyInstaller build
+# ══════════════════════════════════════════════════════════════
+
+def build_main(pyinstaller_bin: str):
+    print(f"\n=== [{_PLATFORM}] Build c69-router → {EXE_NAME} ===")
+    cmd = [pyinstaller_bin, "c69-router.spec", "--clean"]
+    print(f"Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, shell=_IS_WIN)
+    if result.returncode != 0:
+        print("PyInstaller build FAILED!")
+        sys.exit(1)
+    print(f"=== Build successful: {DIST_EXE} ===")
+
+    # Set executable bit on Linux/macOS
+    if not _IS_WIN and os.path.exists(DIST_EXE):
+        os.chmod(DIST_EXE, 0o755)
+
+
+def build_updater(pyinstaller_bin: str):
+    """Build c69update helper (Windows only for now — updater is PE-aware)."""
+    updater_spec = "c69update.spec"
+    if not os.path.exists(updater_spec):
+        print(f"  [skip] {updater_spec} not found — skipping updater build.")
+        return
+
+    print(f"\n=== [{_PLATFORM}] Build c69update → {UPDATER_NAME} ===")
+    cmd = [pyinstaller_bin, updater_spec, "--clean"]
+    print(f"Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, shell=_IS_WIN)
+    if result.returncode != 0:
+        print("c69update build FAILED!")
+        sys.exit(1)
+    print(f"=== Updater build successful: {DIST_UPDATER} ===")
+
+    if not _IS_WIN and os.path.exists(DIST_UPDATER):
+        os.chmod(DIST_UPDATER, 0o755)
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 4: Zip
+# ══════════════════════════════════════════════════════════════
+
+def make_zip():
+    if not os.path.exists(DIST_EXE):
+        print(f"ERROR: Binary not found at {DIST_EXE}")
         sys.exit(1)
 
+    print(f"\n=== Zipping → {ZIP_PATH} ===")
+    with zipfile.ZipFile(ZIP_PATH, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.write(DIST_EXE, EXE_NAME)
 
-# ─────────────────────────────────────────────────────────────
-# CLOUDFLARE R2 UPLOAD (S3-compatible API)
-# ─────────────────────────────────────────────────────────────
+        if os.path.exists(DIST_UPDATER):
+            zf.write(DIST_UPDATER, UPDATER_NAME)
 
-def _r2_upload_boto3(zip_path: str):
+        # Include platform-specific setup scripts
+        if _IS_WIN:
+            for f in ("setup_windows.bat", "setup_windows.ps1"):
+                if os.path.exists(f):
+                    zf.write(f, f)
+        elif _IS_LIN:
+            if os.path.exists("setup_linux.sh"):
+                zf.write("setup_linux.sh", "setup_linux.sh")
+        elif _IS_MAC:
+            if os.path.exists("setup_macos.sh"):
+                zf.write("setup_macos.sh", "setup_macos.sh")
+
+    size_mb = os.path.getsize(ZIP_PATH) / 1024 / 1024
+    print(f"=== Zip OK: {ZIP_PATH} ({size_mb:.1f} MB) ===")
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 5: Upload to R2
+# ══════════════════════════════════════════════════════════════
+
+def upload_to_r2(zip_path: str) -> str:
+    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+        print("  [R2] No CF credentials in .env — skipping R2 upload.")
+        return ""
+
     try:
         import boto3
         from botocore.config import Config
     except ImportError:
-        print("  [R2] boto3 chưa cài. Đang cài: pip install boto3...")
+        print("  [R2] Installing boto3...")
         os.system(f"{sys.executable} -m pip install boto3 -q")
         import boto3
         from botocore.config import Config
 
     endpoint = f"https://{CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    tok = CLOUDFLARE_API_TOKEN
     s3 = boto3.client(
         "s3",
         endpoint_url=endpoint,
-        aws_access_key_id=CLOUDFLARE_API_TOKEN.split(":")[0] if ":" in CLOUDFLARE_API_TOKEN else CLOUDFLARE_API_TOKEN,
-        aws_secret_access_key=CLOUDFLARE_API_TOKEN.split(":")[1] if ":" in CLOUDFLARE_API_TOKEN else CLOUDFLARE_API_TOKEN,
+        aws_access_key_id=tok.split(":")[0] if ":" in tok else tok,
+        aws_secret_access_key=tok.split(":")[1] if ":" in tok else tok,
         config=Config(signature_version="s3v4"),
         region_name="auto",
     )
 
     file_size = os.path.getsize(zip_path)
-    print(f"  Bắt đầu upload lên R2 bucket [{R2_BUCKET_NAME}]...")
+    print(f"\n=== Upload lên Cloudflare R2 [{R2_BUCKET_NAME}] ===")
     print(f"  File: {os.path.basename(zip_path)} ({file_size / 1024 / 1024:.1f} MB)")
+    print(f"  Key:  {ZIP_KEY}")
 
     uploaded = [0]
     start_time = [time.time()]
 
     def progress(bytes_transferred):
         uploaded[0] += bytes_transferred
-        pct = uploaded[0] / file_size * 100
+        pct   = uploaded[0] / file_size * 100
         speed = uploaded[0] / (time.time() - start_time[0] + 0.001) / 1024 / 1024
         print(
             f"\r  {uploaded[0]/1024/1024:.1f} MB / {file_size/1024/1024:.1f} MB "
@@ -152,66 +235,86 @@ def _r2_upload_boto3(zip_path: str):
         )
 
     s3.upload_file(
-        zip_path,
-        R2_BUCKET_NAME,
-        ZIP_FILENAME,
+        zip_path, R2_BUCKET_NAME, ZIP_KEY,
         Callback=progress,
         ExtraArgs={"ContentType": "application/zip"},
     )
     print(f"\n  Upload hoàn tất!")
+    return f"{R2_PUBLIC_URL.rstrip('/')}/{ZIP_KEY}" if R2_PUBLIC_URL else f"r2://{R2_BUCKET_NAME}/{ZIP_KEY}"
 
-    return f"{R2_PUBLIC_URL.rstrip('/')}/{ZIP_FILENAME}" if R2_PUBLIC_URL else None
 
-
-def upload_to_r2(zip_path: str):
-    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
-        print("  [R2] Chưa cấu hình CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN trong .env.")
-        return None
-
-    print("=== Upload lên Cloudflare R2 ===")
+def upload_to_sftp(zip_path: str) -> str:
     try:
-        return _r2_upload_boto3(zip_path)
-    except Exception as e:
-        print(f"\n  [R2] Upload thất bại: {e}")
-        return None
+        import paramiko
+    except ImportError:
+        print("  [SFTP] paramiko not installed. Run: pip install paramiko")
+        return ""
 
-
-# ─────────────────────────────────────────────────────────────
-# FALLBACK: Upload lên server riêng qua SFTP
-# ─────────────────────────────────────────────────────────────
-
-def upload_to_server_sftp(zip_path: str):
-    import paramiko
-    print(f"=== Fallback: Upload SFTP lên {FALLBACK_SFTP_HOST} ===")
-
+    print(f"\n=== Fallback SFTP: {FALLBACK_SFTP_HOST} ===")
     filename = os.path.basename(zip_path)
     remote_path = f"{FALLBACK_REMOTE_PATH}/{filename}"
 
-    def upload_progress(transferred, total):
-        percentage = (transferred / total) * 100
-        print(f"\rUploading: {transferred / (1024*1024):.2f}MB / {total / (1024*1024):.2f}MB ({percentage:.1f}%)", end='', flush=True)
+    def progress(transferred, total):
+        pct = transferred / total * 100
+        print(f"\r  {transferred/1024/1024:.2f} MB / {total/1024/1024:.2f} MB ({pct:.1f}%)", end='', flush=True)
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
     try:
-        print(f"Đang kết nối tới {FALLBACK_SFTP_HOST}...")
-        ssh.connect(FALLBACK_SFTP_HOST, username=FALLBACK_SFTP_USER, password=FALLBACK_SFTP_PASS, timeout=30)
-        print("Kết nối thành công!")
-
+        ssh.connect(FALLBACK_SFTP_HOST, username=FALLBACK_SFTP_USER,
+                    password=FALLBACK_SFTP_PASS, timeout=30)
         ssh.exec_command(f"mkdir -p {FALLBACK_REMOTE_PATH}")
-
         sftp = ssh.open_sftp()
-        print(f"Bắt đầu upload SFTP tới {remote_path}...")
-        sftp.put(zip_path, remote_path, callback=upload_progress)
+        sftp.put(zip_path, remote_path, callback=progress)
         sftp.close()
-        print("\n=== Tải lên thành công! ===")
+        print(f"\n=== SFTP upload OK ===")
         return f"https://c69.us/static/{filename}"
     except Exception as e:
-        print(f"\nLỗi khi upload file: {e}")
-        return None
+        print(f"\n  SFTP failed: {e}")
+        return ""
     finally:
         ssh.close()
+
+
+# ══════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════
+
+def build():
+    local_only = "--local" in sys.argv
+
+    print(f"\n{'='*60}")
+    print(f"  c69-router Build Script")
+    print(f"  Platform : {_PLATFORM} ({'64-bit' if sys.maxsize > 2**32 else '32-bit'})")
+    print(f"  Binary   : {EXE_NAME}")
+    print(f"  ZIP key  : {ZIP_KEY}")
+    print(f"  Mode     : {'LOCAL (no upload)' if local_only else 'BUILD + UPLOAD'}")
+    print(f"{'='*60}\n")
+
+    pyinstaller_bin = find_pyinstaller()
+
+    kill_running()
+    build_main(pyinstaller_bin)
+    build_updater(pyinstaller_bin)
+    make_zip()
+
+    if local_only:
+        print(f"\n=== [--local] Done. ZIP at: {ZIP_PATH} ===")
+        return
+
+    url = upload_to_r2(ZIP_PATH)
+    if not url:
+        print("\n=== R2 unavailable, trying SFTP fallback ===")
+        url = upload_to_sftp(ZIP_PATH)
+
+    if url:
+        print(f"\n{'='*60}")
+        print(f"  DONE — Download URL:")
+        print(f"  {url}")
+        print(f"{'='*60}")
+    else:
+        print("\n=== ERROR: Both R2 and SFTP failed ===")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
