@@ -20,13 +20,55 @@ from contextlib import asynccontextmanager
 def check_admin_elevation():
     _sys_platform = platform.system()
 
-    if _sys_platform in ("Linux", "Darwin"):
-        # On Unix: must run as root
+    if _sys_platform == "Darwin":
+        # macOS: re-launch with osascript GUI password popup if not root
+        import os as _os
+        if _os.geteuid() != 0:
+            is_frozen = getattr(sys, 'frozen', False)
+            if is_frozen:
+                # .app bundle: executable is the binary inside MacOS/
+                exe = sys.executable
+                # osascript 'do shell script' with administrator privileges
+                # shows macOS native password dialog
+                apple_script = (
+                    f'do shell script "{exe}" '
+                    f'with administrator privileges '
+                    f'without altering line endings'
+                )
+            else:
+                # Source run: sudo python3 -m uvicorn ...
+                cmd = f'sudo {sys.executable} -m uvicorn app.main:app --host 0.0.0.0 --port 9000'
+                apple_script = (
+                    f'do shell script "{cmd}" '
+                    f'with administrator privileges '
+                    f'without altering line endings'
+                )
+            try:
+                result = subprocess.run(
+                    ["osascript", "-e", apple_script],
+                    capture_output=True, text=True, timeout=60
+                )
+                if result.returncode == 0:
+                    sys.exit(0)
+                else:
+                    # User cancelled or wrong password
+                    err = result.stderr.strip()
+                    print(f"[!] macOS admin elevation failed: {err}")
+                    print(f"[!] Try running manually: sudo {sys.executable} -m uvicorn app.main:app --host 0.0.0.0 --port 9000")
+                    sys.exit(1)
+            except FileNotFoundError:
+                # osascript not available (unlikely on macOS)
+                print("[!] osascript not found. Run: sudo bash run.sh")
+                sys.exit(1)
+        return
+
+    if _sys_platform == "Linux":
+        # Linux: must run as root (no GUI popup available in general)
         import os as _os
         if _os.geteuid() != 0:
             print("=" * 60)
             print(" [!] c69-router: Root privileges required (for TUN/NAT/iptables).")
-            print(" [!] Please re-run with: sudo " + " ".join(sys.argv))
+            print(" [!] Please re-run with: sudo bash run.sh")
             print("=" * 60)
             sys.exit(1)
         return

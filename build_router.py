@@ -33,11 +33,12 @@ DIST_UPDATER    = os.path.join("dist", UPDATER_NAME)
 if _IS_WIN:
     ZIP_KEY = "c69-router.zip"          # Windows: giữ tên cũ để tương thích
 elif _IS_MAC:
-    ZIP_KEY = "c69-router-macos.zip"
+    ZIP_KEY = "c69-router-macos.dmg"    # macOS: .dmg cho drag-and-drop install
 else:
-    ZIP_KEY = "c69-router-linux.zip"
+    ZIP_KEY = "c69-router-linux.zip"    # Linux: .zip
 
 ZIP_PATH = os.path.join("dist", ZIP_KEY)
+APP_BUNDLE = os.path.join("dist", "c69-router.app")  # macOS only
 
 # ── Cloudflare R2 config (đọc từ .env) ───────────────────────
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -159,7 +160,20 @@ def build_updater(pyinstaller_bin: str):
 # STEP 4: Zip
 # ══════════════════════════════════════════════════════════════
 
-def make_zip():
+def make_package():
+    """Create distributable package:
+      Windows  → .zip  (exe + updater + setup scripts)
+      Linux    → .zip  (binary + setup_linux.sh)
+      macOS    → .dmg  (drag-and-drop .app bundle)
+    """
+    if _IS_MAC:
+        _make_dmg()
+    else:
+        _make_zip()
+
+
+def _make_zip():
+    """Windows / Linux: create zip archive."""
     if not os.path.exists(DIST_EXE):
         print(f"ERROR: Binary not found at {DIST_EXE}")
         sys.exit(1)
@@ -171,7 +185,6 @@ def make_zip():
         if os.path.exists(DIST_UPDATER):
             zf.write(DIST_UPDATER, UPDATER_NAME)
 
-        # Include platform-specific setup scripts
         if _IS_WIN:
             for f in ("setup_windows.bat", "setup_windows.ps1"):
                 if os.path.exists(f):
@@ -179,12 +192,67 @@ def make_zip():
         elif _IS_LIN:
             if os.path.exists("setup_linux.sh"):
                 zf.write("setup_linux.sh", "setup_linux.sh")
-        elif _IS_MAC:
-            if os.path.exists("setup_macos.sh"):
-                zf.write("setup_macos.sh", "setup_macos.sh")
 
     size_mb = os.path.getsize(ZIP_PATH) / 1024 / 1024
     print(f"=== Zip OK: {ZIP_PATH} ({size_mb:.1f} MB) ===")
+
+
+def _make_dmg():
+    """macOS: create drag-and-drop DMG from .app bundle using hdiutil (built-in)."""
+    if not os.path.exists(APP_BUNDLE):
+        print(f"ERROR: .app bundle not found at {APP_BUNDLE}")
+        print("  Make sure the build succeeded and c69-router.app is in dist/")
+        sys.exit(1)
+
+    dmg_path = ZIP_PATH  # c69-router-macos.dmg
+    tmp_dmg  = dmg_path.replace(".dmg", "-tmp.dmg")
+
+    # Clean up old files
+    for p in (dmg_path, tmp_dmg):
+        if os.path.exists(p):
+            os.remove(p)
+
+    print(f"\n=== Creating macOS DMG → {dmg_path} ===")
+
+    # Step 1: Create a writable DMG containing the .app
+    # Volume size: app size + 20MB buffer
+    app_size_mb = int(sum(
+        os.path.getsize(os.path.join(root, f))
+        for root, _, files in os.walk(APP_BUNDLE)
+        for f in files
+    ) / 1024 / 1024) + 30
+
+    r = subprocess.run([
+        "hdiutil", "create",
+        "-size", f"{app_size_mb}m",
+        "-volname", "c69-Router",
+        "-srcfolder", APP_BUNDLE,
+        "-ov", "-format", "UDRW",
+        tmp_dmg,
+    ], capture_output=True, text=True)
+
+    if r.returncode != 0:
+        print(f"hdiutil create failed: {r.stderr}")
+        sys.exit(1)
+
+    # Step 2: Convert to compressed read-only DMG (UDZO)
+    r2 = subprocess.run([
+        "hdiutil", "convert", tmp_dmg,
+        "-format", "UDZO",
+        "-o", dmg_path,
+    ], capture_output=True, text=True)
+
+    if r2.returncode != 0:
+        print(f"hdiutil convert failed: {r2.stderr}")
+        sys.exit(1)
+
+    # Cleanup temp
+    if os.path.exists(tmp_dmg):
+        os.remove(tmp_dmg)
+
+    size_mb = os.path.getsize(dmg_path) / 1024 / 1024
+    print(f"=== DMG OK: {dmg_path} ({size_mb:.1f} MB) ===")
+    print(f"  Users: double-click DMG → drag c69-Router.app to Applications")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -283,11 +351,12 @@ def upload_to_sftp(zip_path: str) -> str:
 def build():
     local_only = "--local" in sys.argv
 
+    _pkg_label = "DMG (.app bundle)" if _IS_MAC else "ZIP"
     print(f"\n{'='*60}")
     print(f"  c69-router Build Script")
     print(f"  Platform : {_PLATFORM} ({'64-bit' if sys.maxsize > 2**32 else '32-bit'})")
     print(f"  Binary   : {EXE_NAME}")
-    print(f"  ZIP key  : {ZIP_KEY}")
+    print(f"  Package  : {ZIP_KEY}  [{_pkg_label}]")
     print(f"  Mode     : {'LOCAL (no upload)' if local_only else 'BUILD + UPLOAD'}")
     print(f"{'='*60}\n")
 
@@ -296,10 +365,10 @@ def build():
     kill_running()
     build_main(pyinstaller_bin)
     build_updater(pyinstaller_bin)
-    make_zip()
+    make_package()
 
     if local_only:
-        print(f"\n=== [--local] Done. ZIP at: {ZIP_PATH} ===")
+        print(f"\n=== [--local] Done. Package at: {ZIP_PATH} ===")
         return
 
     url = upload_to_r2(ZIP_PATH)
@@ -311,6 +380,8 @@ def build():
         print(f"\n{'='*60}")
         print(f"  DONE — Download URL:")
         print(f"  {url}")
+        if _IS_MAC:
+            print(f"  Users: download .dmg → double-click → drag to Applications")
         print(f"{'='*60}")
     else:
         print("\n=== ERROR: Both R2 and SFTP failed ===")
