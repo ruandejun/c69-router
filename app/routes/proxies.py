@@ -868,6 +868,7 @@ _device_rotate_state: dict = {}
 @router.post("/set-device-rotation")
 def set_device_rotation(
     payload: dict,
+    config=Depends(get_config),
     mac_registry=Depends(get_mac_registry),
 ):
     """Cài đặt rotate_minutes cho 1 hoặc nhiều thiết bị.
@@ -875,17 +876,33 @@ def set_device_rotation(
     Payload:
       - macs: list[str] — danh sách MAC cần set. Nếu rỗng/null = áp dụng cho TẤT CẢ.
       - rotate_minutes: int — 0=theo global, >0=override riêng cho device đó.
+    
+    Khi macs=[] (bulk áp toàn bộ), setting được lưu vào config.default_device_rotate_minutes
+    để thiết bị MỚI kết nối sau đó tự động inherit cùng setting — không cần bấm lại.
     """
+    from app.config import save_config
+
     if not mac_registry:
         raise HTTPException(status_code=503, detail="MAC registry not available")
 
     rotate_minutes = int(payload.get("rotate_minutes", 0))
     macs = payload.get("macs") or []
+    is_bulk = not macs  # True khi áp cho tất cả (không chỉ định MAC)
 
-    if not macs:
+    if is_bulk:
         # Áp dụng toàn bộ thiết bị
         all_devices = mac_registry.get_all_devices()
         macs = [d.mac for d in all_devices]
+        # Lưu vào config để thiết bị mới join sau này tự động inherit
+        config.default_device_rotate_minutes = rotate_minutes
+        try:
+            save_config(config)
+            logger.info(
+                f"[Proxies] Saved default_device_rotate_minutes={rotate_minutes} — "
+                f"new devices will auto-inherit this rotation setting."
+            )
+        except Exception as e:
+            logger.warning(f"[Proxies] Failed to save default rotation setting: {e}")
 
     updated = []
     not_found = []
@@ -909,8 +926,12 @@ def set_device_rotation(
         "updated_macs": updated,
         "not_found": not_found,
         "rotate_minutes": rotate_minutes,
-        "message": f"Đã cài {rotate_minutes} phút cho {len(updated)} thiết bị."
-                   f"{' (0=theo global)' if rotate_minutes == 0 else ''}",
+        "saved_as_default": is_bulk,
+        "message": (
+            f"Đã cài {rotate_minutes} phút cho {len(updated)} thiết bị"
+            f"{' (0=theo global)' if rotate_minutes == 0 else ''}"
+            f"{'. Setting đã lưu — thiết bị mới sẽ tự động dùng cùng cài đặt.' if is_bulk else '.'}"
+        ),
     }
 
 

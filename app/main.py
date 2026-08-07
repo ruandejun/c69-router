@@ -347,6 +347,27 @@ def _on_dhcp_lease(mac: str, ip: str, name: str, ip_changed: bool = True):
                         _mac_registry.set_proxy(mac, best_proxy_id)
                         logger.info(f"[Main] Auto-assigned proxy {best_proxy_id} to device {mac}")
                         assigned_now = True
+
+                        # Áp default rotate setting cho thiết bị mới — nếu user đã set bulk
+                        # rotation trước đó (config.default_device_rotate_minutes > 0), thiết
+                        # bị mới tự động inherit cùng setting mà không cần bấm lại.
+                        default_rotate = getattr(config, "default_device_rotate_minutes", 0)
+                        if default_rotate > 0:
+                            _mac_registry.set_rotate_minutes(mac, default_rotate)
+                            # Khởi tạo per-device timer để countdown bắt đầu từ lúc join
+                            try:
+                                from app.routes.proxies import _device_rotate_state
+                                import time as _time
+                                _device_rotate_state[mac.upper()] = {
+                                    "last_rotate_time": _time.time(),
+                                    "total_rotations": 0,
+                                }
+                            except Exception:
+                                pass
+                            logger.info(
+                                f"[Main] Auto-set rotate_minutes={default_rotate} for new device {mac} "
+                                f"(inherited from system default setting)"
+                            )
                 else:
                     logger.warning(f"[Main] Auto-assign enabled but no LIVE proxies found for device {mac}")
 

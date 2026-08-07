@@ -26,6 +26,7 @@ class SettingsUpdatePayload(BaseModel):
     dhcp_lease_time: int = 3600
     dns_server: str
     auto_rotate_minutes: int = 0
+    default_device_rotate_minutes: int = 0
     auto_assign_new_devices: bool = False
     auto_assign_mode: str = "balance"
     block_direct_devices: bool = False
@@ -55,6 +56,7 @@ def update_settings(
     config.dhcp_lease_time = payload.dhcp_lease_time
     config.dns_server = payload.dns_server
     config.auto_rotate_minutes = payload.auto_rotate_minutes
+    config.default_device_rotate_minutes = payload.default_device_rotate_minutes
     config.auto_assign_new_devices = payload.auto_assign_new_devices
     config.auto_assign_mode = payload.auto_assign_mode
     config.block_direct_devices = payload.block_direct_devices

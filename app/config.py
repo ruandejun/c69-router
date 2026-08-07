@@ -93,6 +93,11 @@ class AppConfig(BaseModel):
     auto_assign_mode: str = "balance"            # balance | exclusive
     block_direct_devices: bool = False
     direct_whitelist: List[str] = Field(default_factory=list)
+    # Số phút rotate mặc định cho thiết bị MỚI kết nối vào.
+    # Khi user set bulk rotation qua /set-device-rotation (không chỉ định MAC cụ thể),
+    # setting này được lưu lại để thiết bị mới join sau đó tự động inherit cùng rotation
+    # mà không cần bấm lại. 0 = không rotate per-device (theo global auto_rotate_minutes).
+    default_device_rotate_minutes: int = 0
 
     # ── Data ──
     proxies: List[ProxyConfig] = Field(default_factory=list)
