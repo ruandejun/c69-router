@@ -1577,29 +1577,12 @@ def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123"):
 
     logger.info(f"[Hotspot] Starting Windows Mobile Hotspot WinRT: SSID='{ssid}'")
 
-    # PS script hoan toan tuong thich PS 5.1:
-    # - Load System.Runtime.WindowsRuntime.dll theo duong dan vat ly (Add-Type -AssemblyName khong đủ)
-    # - Tim WindowsRuntimeSystemExtensions qua AppDomain (khong dung [FullTypeName] syntax PS5.1 gioi han)
-    # - Dung if/else thay vi ?? (PS7+ only)
+    # PS script: dung IAsyncOperation.Status polling - KHONG can AsTask/WindowsRuntimeSystemExtensions
+    # IAsyncOperation la WinRT native, co san sau khi load WinRT namespace type
+    # Status: 0=Started/Running, 1=Completed, 2=Canceled, 3=Error
+    # GetResults() tra ket qua khi Status==1
     ps_content = f"""
-# B1: Load System.Runtime.WindowsRuntime.dll theo duong dan vat ly
-$rtDir = [System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()
-$winrtDll = [System.IO.Path]::Combine($rtDir, "System.Runtime.WindowsRuntime.dll")
-if (Test-Path $winrtDll) {{
-    [void][System.Reflection.Assembly]::LoadFile($winrtDll)
-}} else {{
-    # Fallback: tim trong Windows assemblies
-    $winrtDll2 = "$env:SystemRoot\\Microsoft.NET\\assembly\\GAC_MSIL\\System.Runtime.WindowsRuntime"
-    $found = Get-ChildItem -Path $winrtDll2 -Filter "System.Runtime.WindowsRuntime.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) {{
-        [void][System.Reflection.Assembly]::LoadFile($found.FullName)
-    }} else {{
-        Write-Output "ERROR:WinRTDllNotFound:$winrtDll"
-        exit 1
-    }}
-}}
-
-# B2: Load WinRT namespace types (moi type tren 1 dong - PS5.1 yeu cau)
+# Load WinRT namespace types (moi type tren 1 dong - PS5.1)
 try {{
     [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]
     [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]
@@ -1609,40 +1592,23 @@ try {{
     exit 1
 }}
 
-# B3: Tim WindowsRuntimeSystemExtensions qua AppDomain (PS5.1 khong cho dung [FullType] cho loai nay)
-$extType = $null
-foreach ($asm in [System.AppDomain]::CurrentDomain.GetAssemblies()) {{
-    try {{
-        $t = $asm.GetType("System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeSystemExtensions")
-        if ($null -ne $t) {{ $extType = $t; break }}
-    }} catch {{}}
-}}
-if ($null -eq $extType) {{
-    Write-Output "ERROR:ExtTypeNotFound"
-    exit 1
-}}
-
-# B4: Tim AsTask<TResult> method co dung 1 generic arg
-$resultType = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]
-$asTaskMethod = $null
-foreach ($m in $extType.GetMethods()) {{
-    if ($m.Name -ne 'AsTask') {{ continue }}
-    if (-not $m.IsGenericMethodDefinition) {{ continue }}
-    if ($m.GetGenericArguments().Count -ne 1) {{ continue }}
-    if ($m.GetParameters().Count -ne 1) {{ continue }}
-    $asTaskMethod = $m.MakeGenericMethod($resultType)
-    break
-}}
-if ($null -eq $asTaskMethod) {{
-    Write-Output "ERROR:AsTaskMethodNotFound"
-    exit 1
-}}
-
-function Await-Op($op) {{
-    $task = $asTaskMethod.Invoke($null, @($op))
-    # Dung Wait(ms) + .Result - tranh deadlock
-    if (-not $task.Wait(30000)) {{ throw "Timeout waiting for WinRT operation" }}
-    return $task.Result
+# Await IAsyncOperation bang polling Status - khong can AsTask hay WindowsRuntimeSystemExtensions
+# Status: 0=Started, 1=Completed, 2=Canceled, 3=Error
+function Await-WinRT($op, $timeoutSec = 30) {{
+    $deadline = [System.DateTime]::Now.AddSeconds($timeoutSec)
+    while ($op.Status -eq 0 -and [System.DateTime]::Now -lt $deadline) {{
+        [System.Threading.Thread]::Sleep(100)
+    }}
+    if ($op.Status -eq 1) {{
+        return $op.GetResults()
+    }} elseif ($op.Status -eq 0) {{
+        throw "Timeout after $timeoutSec seconds"
+    }} elseif ($op.Status -eq 2) {{
+        throw "Operation was canceled"
+    }} else {{
+        # Status 3 = Error - lay ErrorCode
+        throw "Operation error (Status=3), ErrorCode=$($op.ErrorCode)"
+    }}
 }}
 
 try {{
@@ -1652,7 +1618,7 @@ try {{
     $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
     if ($null -eq $mgr) {{ Write-Output "ERROR:NoTetheringManager"; exit 1 }}
 
-    # Ket noi hien tai: 0=Off, 1=On, 2=InTransition
+    # Trang thai hien tai: 0=Off, 1=On, 2=InTransition
     $state = $mgr.TetheringOperationalState
     if ($state -eq 1) {{ Write-Output "ALREADY_ACTIVE"; exit 0 }}
 
@@ -1660,14 +1626,15 @@ try {{
     $cfg = $mgr.GetCurrentAccessPointConfiguration()
     $cfg.Ssid = '{ssid}'
     $cfg.Passphrase = '{password}'
-    Await-Op ($mgr.ConfigureAccessPointAsync($cfg)) | Out-Null
+    Await-WinRT ($mgr.ConfigureAccessPointAsync($cfg)) | Out-Null
 
     # Bat hotspot
-    $r = Await-Op ($mgr.StartTetheringAsync())
+    $r = Await-WinRT ($mgr.StartTetheringAsync())
+    # TetheringOperationStatus: 0=Success, khac=loi
     if ($r.Status -eq 0) {{
         Write-Output "SUCCESS"
     }} else {{
-        Write-Output "ERROR:Status=$($r.Status)"
+        Write-Output "ERROR:TetheringStatus=$($r.Status)"
     }}
 }} catch {{
     $errMsg = if ($_.Exception.InnerException) {{ $_.Exception.InnerException.Message }} else {{ $_.Exception.Message }}
