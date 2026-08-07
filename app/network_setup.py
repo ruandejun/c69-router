@@ -294,8 +294,8 @@ def detect_wan_interface() -> str:
         # Chon theo priority: Ethernet > WiFi > other, trong cung loai chon metric thap nhat
         for candidates in [ethernet_candidates, wifi_candidates, other_candidates]:
             if candidates:
-                chosen = sorted(candidates)[0][1]  # metric thap nhat
-                logger.info(f"[Network] Auto-detected WAN: '{chosen}' (media={parts[1] if lines else '?'})")
+                metric_val, chosen = sorted(candidates)[0]  # metric thap nhat
+                logger.info(f"[Network] Auto-detected WAN: '{chosen}'")
                 return chosen
 
     except Exception as e:
@@ -444,16 +444,21 @@ def _get_adapter_media_type(adapter_name: str) -> str:
 
 
 
-def is_lan_interface_valid(interface_name: str, wan_interface: str = "") -> bool:
-    """Kiểm tra LAN interface đang lưu trong config có còn tồn tại, đang UP, và
-    không trùng với WAN interface không — đề phòng config.json lỗi thời (vd copy
-    sang máy khác, đổi tên card) khiến LAN bridge trỏ vào card không tồn tại hoặc
-    card đang dùng làm WAN.
+def is_lan_interface_valid(interface_name: str, wan_interface: str = "",
+                           allow_wan_hotspot: bool = False) -> bool:
+    """Kiem tra LAN interface trong config con ton tai, dang UP, khong trung WAN.
+
+    allow_wan_hotspot=True: khi wifi_hotspot_enabled=True va lan=wan la VALID
+    (Tier 4 hotspot mode — sau khi hotspot bat se update sang virtual adapter).
     """
     if platform.system() != "Windows" or not interface_name:
         return False
 
     if wan_interface and interface_name == wan_interface:
+        # Tier 4 hotspot mode: lan==wan la okay khi cho phep
+        if allow_wan_hotspot:
+            logger.debug(f"[Network] LAN==WAN ('{interface_name}') allowed in hotspot mode.")
+            return True
         return False
 
     try:
@@ -465,7 +470,7 @@ def is_lan_interface_valid(interface_name: str, wan_interface: str = "") -> bool
         return result.stdout.strip() == "Up"
     except Exception as e:
         logger.warning(f"[Network] Failed to verify LAN interface '{interface_name}': {e}")
-        return True  # Không xác minh được thì tin theo config, tránh false positive
+        return True  # Khong xac minh duoc thi tin theo config, tranh false positive
 
 
 def is_wan_interface_valid(interface_name: str) -> bool:

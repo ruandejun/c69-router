@@ -942,8 +942,15 @@ async def lifespan(app: FastAPI):
         logger.info(f"[Main] ✓ WAN interface '{config.wan_interface}' có route internet hợp lệ.")
 
     # 3.6 Smart LAN detection: Ethernet thuan LAN (khong WAN route) > Ethernet bat ky
-    # > WiFi adapter thu 2 (tu dong bat hotspot). Giu config neu interface hien tai van hop le.
-    if not is_lan_interface_valid(config.lan_interface, wan_interface=config.wan_interface):
+    # > WiFi adapter thu 2 (tu dong bat hotspot) > WAN WiFi lam hotspot (Tier 4).
+    # allow_wan_hotspot=True khi wifi_hotspot_enabled: tranh re-detect vo han o Tier 4.
+    hotspot_already_on = getattr(config, "wifi_hotspot_enabled", False)
+    lan_valid = is_lan_interface_valid(
+        config.lan_interface,
+        wan_interface=config.wan_interface,
+        allow_wan_hotspot=hotspot_already_on,
+    )
+    if not lan_valid:
         detected_lan, needs_hotspot = smart_detect_lan(exclude_interface=config.wan_interface)
         logger.warning(
             f"[Main] LAN interface '{config.lan_interface}' khong hop le "
@@ -952,7 +959,7 @@ async def lifespan(app: FastAPI):
         config.lan_interface = detected_lan
 
         # Neu detect duoc WiFi adapter lam LAN -> tu dong bat hotspot
-        if needs_hotspot and not getattr(config, "wifi_hotspot_enabled", False):
+        if needs_hotspot and not hotspot_already_on:
             logger.info("[Main] WiFi adapter detected as LAN -> auto-enabling wifi_hotspot")
             config.wifi_hotspot_enabled = True
             if not getattr(config, "wifi_hotspot_ssid", None) or config.wifi_hotspot_ssid in ("C69-Router", ""):
