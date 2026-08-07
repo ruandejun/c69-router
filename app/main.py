@@ -1224,7 +1224,26 @@ async def lifespan(app: FastAPI):
     # adapter chua tao ra), KHONG goi setup_network voi LAN=WAN vi ensure_lan_ip_assigned
     # se xoa IP DHCP cua WiFi WAN card va gan IP tinh 192.168.10.1 -> mat internet.
     # Chi setup NAT va firewall, bo qua phan IP/forwarding cua LAN.
-    if config.lan_interface == config.wan_interface:
+    _is_hotspot_mode = getattr(config, "wifi_hotspot_enabled", False) and platform.system() == "Windows"
+
+    if _is_hotspot_mode:
+        # HOTSPOT MODE: Windows ICS (icssvc/SharedAccess) đã lo NAT + DHCP cho subnet 192.168.137.0/24.
+        # Gọi setup_nat() sẽ trigger _ensure_nat_prereqs() → stop ICS → hotspot chết (InTransition).
+        # Chỉ cần: download binaries, bật IP forwarding, cấu hình firewall — KHÔNG setup NAT.
+        logger.info("[Main] Hotspot mode: minimal network setup (skip NAT để không kill Windows ICS).")
+        try:
+            from app.network_setup import download_binaries, enable_ip_forwarding, setup_firewall_rules, adjust_lan_interface_metric, ensure_wan_forwarding_disabled
+            download_binaries()
+            enable_ip_forwarding(lan_interface=config.lan_interface)
+            if config.wan_interface:
+                ensure_wan_forwarding_disabled(wan_interface=config.wan_interface)
+            setup_firewall_rules()
+            adjust_lan_interface_metric(config.lan_interface)
+            logger.info("[Main] Hotspot mode: network setup done (NAT handled by Windows ICS).")
+        except Exception as e:
+            logger.warning(f"[Main] Hotspot network setup error: {e}")
+    elif config.lan_interface == config.wan_interface:
+
         logger.warning(
             f"[Main] SAFETY: lan_interface == wan_interface ('{config.wan_interface}') "
             f"— bo qua setup_network de khong mat internet. "
