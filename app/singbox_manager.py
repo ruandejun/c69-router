@@ -40,6 +40,7 @@ class SingBoxManager:
         self._reload_lock = threading.Lock()
         self._watchdog_stop = threading.Event()
         self._watchdog_thread = None
+        self._on_crash_callback = None   # Callback(event_type, detail) — inject từ main.py
         self.last_error: Optional[str] = None  # Lý do lần start() gần nhất thất bại (None nếu OK)
         # ip -> "dns_{proxy_id}" | "dns_direct": bucket DNS mà TIẾN TRÌNH sing-box đang chạy
         # THỰC SỰ áp dụng cho mỗi IP (chốt lại sau mỗi lần _apply() start() thành công).
@@ -52,6 +53,25 @@ class SingBoxManager:
         # Tăng mỗi khi _apply() BẮT ĐẦU đọc lại state (generate_config()) — dùng để coalesce
         # các reload_now() chồng lấn, xem giải thích chi tiết ở reload_now().
         self._apply_epoch = 0
+
+    def set_crash_callback(self, callback):
+        """Đăng ký callback được gọi khi sing-box crash hoặc recover.
+
+        callback(event: str, detail: str) trong đó:
+          event = 'singbox_crash'    — process chết ngoài ý muốn, bắt đầu restart
+          event = 'singbox_restart_failed' — restart thất bại
+          event = 'singbox_recovered' — restart thành công, sing-box đang chạy lại
+        """
+        self._on_crash_callback = callback
+
+    def _notify(self, event: str, detail: str = ""):
+        """Gọi crash callback nếu đã đăng ký."""
+        cb = self._on_crash_callback
+        if cb:
+            try:
+                cb(event, detail)
+            except Exception as _ce:
+                logger.debug(f"[SingBox] Crash callback error: {_ce}")
 
     def start_watchdog(self, interval_seconds: int = 20):
         """Giám sát nền: nếu sing-box được kỳ vọng đang chạy (self._is_running == True,
@@ -95,20 +115,31 @@ class SingBoxManager:
                     )
                     from app.error_reporter import report_error
                     report_error("SingBox", self.last_error, level="warning")
+
+                    # ── Broadcast CRASH event ──
+                    self._notify("singbox_crash", self.last_error)
+
                     try:
                         self.start()
                     except Exception as e:
                         self.last_error = f"Watchdog restart failed: {e}"
                         logger.error(f"[SingBox] Watchdog restart failed: {e}")
                         report_error("SingBox", self.last_error, level="critical", exc=e)
+                        self._notify("singbox_restart_failed", self.last_error)
 
                     if self.is_running:
                         fails = 0
+                        logger.info("[SingBox] Watchdog: sing-box recovered successfully.")
+                        self._notify("singbox_recovered", "sing-box restarted and is running.")
                     else:
                         fails += 1
                         logger.error(
                             f"[SingBox] Watchdog restart failed (lần thứ {fails} liên tiếp); "
                             f"giãn chu kỳ kiểm tra lên {interval_seconds * (1 + min(fails, 8))}s."
+                        )
+                        self._notify(
+                            "singbox_restart_failed",
+                            f"Restart failed (attempt {fails}); next retry in {interval_seconds * (1 + min(fails, 8))}s."
                         )
 
         self._watchdog_thread = threading.Thread(target=_loop, daemon=True, name="singbox-watchdog")

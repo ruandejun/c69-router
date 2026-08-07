@@ -803,6 +803,24 @@ async def lifespan(app: FastAPI):
     _singbox_manager = SingBoxManager(config, _mac_registry)
     _singbox_manager.start_watchdog()
 
+    # Đăng ký callback để broadcast WebSocket alert khi sing-box crash/recover.
+    # Dashboard nhận event này và hiển thị toast/banner cảnh báo ngay lập tức,
+    # giúp xác định xem mất mạng có phải do sing-box crash không.
+    def _on_singbox_event(event: str, detail: str):
+        import time
+        _broadcast_ws({
+            "type": event,           # singbox_crash | singbox_recovered | singbox_restart_failed
+            "detail": detail,
+            "timestamp": time.time(),
+        })
+        if event == "singbox_crash":
+            logger.warning(f"[Main] 🔴 sing-box CRASHED — broadcast WS alert: {detail}")
+        elif event == "singbox_recovered":
+            logger.info(f"[Main] 🟢 sing-box RECOVERED — broadcast WS alert.")
+        elif event == "singbox_restart_failed":
+            logger.error(f"[Main] ❌ sing-box restart FAILED — broadcast WS alert: {detail}")
+    _singbox_manager.set_crash_callback(_on_singbox_event)
+
     # 6. Start DHCP Server
     if config.dhcp_enabled:
         _dhcp_server = DHCPServer(

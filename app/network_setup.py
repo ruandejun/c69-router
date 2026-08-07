@@ -1229,26 +1229,34 @@ foreach ($a in $adapters) {
         return None
 
 
-def setup_hosted_network(ssid: str = "C69-Router", password: str = "c69router123") -> bool:
-    """Tạo và khởi động Windows Hosted Network (WiFi hotspot) qua netsh.
+def setup_hosted_network(ssid: str = "C69-Router", password: str = "matkhau123") -> bool:
+    """Tao WiFi hotspot - tu dong chon phuong an tot nhat.
 
-    netsh wlan hostednetwork hoạt động trên Windows 7-11, không cần thư viện ngoài.
-    Windows tạo 1 virtual adapter "Microsoft Hosted Network Virtual Adapter" (hoặc
-    "Microsoft Wi-Fi Direct Virtual Adapter") để bridge traffic qua card WiFi vật lý.
+    Thu theo thu tu:
+    1. netsh wlan hostednetwork (neu driver ho tro)
+    2. Windows Mobile Hotspot WinRT (fallback cho Intel AX201/AX210, Win11)
 
-    Args:
-        ssid: Tên WiFi phát ra (mặc định: C69-Router)
-        password: Mật khẩu WiFi (tối thiểu 8 ký tự)
-
-    Returns:
-        True nếu hotspot khởi động thành công, False nếu lỗi.
+    Returns: True neu thanh cong.
     """
     if platform.system() != "Windows":
-        logger.warning("[Hotspot] setup_hosted_network chỉ hỗ trợ Windows.")
+        logger.warning("[Hotspot] setup_hosted_network chi ho tro Windows.")
         return False
 
     if len(password) < 8:
-        password = password + "12345678"[:8 - len(password)]
+        password = (password + "12345678")[:8]
+
+    hw = check_hosted_network_supported()
+    method = hw.get("method")
+
+    if method == "netsh":
+        logger.info(f"[Hotspot] Method: netsh hostednetwork. SSID='{ssid}'")
+        # Fall through to existing netsh logic below
+    elif method == "winrt":
+        logger.info(f"[Hotspot] Method: Windows Mobile Hotspot WinRT. SSID='{ssid}'")
+        return setup_mobile_hotspot_ps(ssid, password)
+    else:
+        logger.warning(f"[Hotspot] No supported method: {hw.get('reason')}")
+        return False
 
     logger.info(f"[Hotspot] Setting up Hosted Network: SSID='{ssid}' ...")
 
@@ -1355,14 +1363,18 @@ def stop_hosted_network():
 
 
 def check_hosted_network_supported() -> dict:
-    """Kiểm tra WiFi card hiện tại có hỗ trợ Hosted Network không.
+    """Kiem tra WiFi card co ho tro hotspot va phuong an nao dung.
 
-    Returns:
-        dict {"supported": bool, "reason": str}
+    Thu 2 phuong an:
+    1. netsh wlan hostednetwork (driver-level, laptop cu / USB dongle)
+    2. Windows Mobile Hotspot WinRT (Intel AX201/AX210, Win10/11 modern)
+
+    Returns: dict {"supported": bool, "method": "netsh"|"winrt"|None, "reason": str}
     """
     if platform.system() != "Windows":
-        return {"supported": False, "reason": "Windows only"}
+        return {"supported": False, "method": None, "reason": "Windows only"}
 
+    # Phuong an 1: netsh hostednetwork
     try:
         result = subprocess.run(
             ["netsh", "wlan", "show", "drivers"],
@@ -1370,17 +1382,92 @@ def check_hosted_network_supported() -> dict:
         )
         out = result.stdout.lower()
         if "hosted network supported  : yes" in out or "hosted network supported: yes" in out:
-            return {"supported": True, "reason": "Driver supports hosted network"}
-        elif "hosted network supported  : no" in out or "hosted network supported: no" in out:
-            return {"supported": False, "reason": "Driver does NOT support hosted network. Try updating WiFi driver."}
-        else:
-            # Thử parse dòng có "hosted network"
-            for line in result.stdout.splitlines():
-                if "hosted network" in line.lower():
-                    return {
-                        "supported": "yes" in line.lower(),
-                        "reason": line.strip()
-                    }
-            return {"supported": False, "reason": f"Cannot determine support. Output: {result.stdout[:200]}"}
+            return {"supported": True, "method": "netsh", "reason": "Driver supports netsh hostednetwork"}
+    except Exception:
+        pass
+
+    # Phuong an 2: Windows Mobile Hotspot (WinRT / icssvc)
+    if _check_icssvc_available():
+        return {
+            "supported": True,
+            "method": "winrt",
+            "reason": (
+                "Windows Mobile Hotspot (WinRT) available. "
+                "netsh hostednetwork not supported by this WiFi driver (common on Intel AX201/AX210)."
+            )
+        }
+
+    return {
+        "supported": False,
+        "method": None,
+        "reason": (
+            "Driver does NOT support netsh hostednetwork, "
+            "and Windows Mobile Hotspot service (icssvc) not found. "
+            "Try: update WiFi driver, or enable Mobile Hotspot in Windows Settings first."
+        )
+    }
+
+
+# ── Windows Mobile Hotspot fallback (Intel AX201/AX210, Win11) ────────────────
+def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123"):
+    """Bat Windows Mobile Hotspot qua PowerShell WinRT API.
+
+    Fallback cho laptop khong ho tro netsh wlan hostednetwork (Intel AX201/AX210).
+    Returns: True neu thanh cong.
+    """
+    if platform.system() != "Windows":
+        return False
+    logger.info(f"[Hotspot] Trying Windows Mobile Hotspot (WinRT): SSID='{ssid}'")
+    ps_script = (
+        "Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null\n"
+        "function Await($t,$rt){$m=[System.WindowsRuntimeSystemExtensions].GetMethod("
+        "'AsTask',[System.Reflection.BindingFlags]'Public,Static,FlattenHierarchy',"
+        "$null,(New-Object System.Type[] 2 -ArgumentList $t.GetType(),$rt),$null);"
+        "$n=$m.Invoke($null,@($t,$null));$n.Wait();$n.Result}\n"
+        "[void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,"
+        "Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]\n"
+        "[void][Windows.Networking.Connectivity.NetworkInformation,"
+        "Windows.Networking.Connectivity,ContentType=WindowsRuntime]\n"
+        "$profile=[Windows.Networking.Connectivity.NetworkInformation]"
+        "::GetInternetConnectionProfile()\n"
+        "if($null -eq $profile){Write-Output 'ERROR:NoInternetProfile';exit 1}\n"
+        "$mgr=[Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]"
+        "::CreateFromConnectionProfile($profile)\n"
+        "if($null -eq $mgr){Write-Output 'ERROR:NoTetheringManager';exit 1}\n"
+        "$cfg=$mgr.GetCurrentAccessPointConfiguration()\n"
+        f"$cfg.Ssid='{ssid}'\n"
+        f"$cfg.Passphrase='{password}'\n"
+        "Await($mgr.ConfigureAccessPointAsync($cfg))"
+        "([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult])"
+        "|Out-Null\n"
+        "if($mgr.TetheringOperationalState -eq 1){Write-Output 'ALREADY_ACTIVE';exit 0}\n"
+        "$r=Await($mgr.StartTetheringAsync())"
+        "([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult])\n"
+        "if($r.Status -eq 0){Write-Output 'SUCCESS'}else{Write-Output \"ERROR:$($r.Status)\"}\n"
+    )
+    try:
+        res = _run_ps_script(ps_script, timeout=30)
+        out = (res.stdout or "").strip()
+        logger.info(f"[Hotspot] Mobile Hotspot PS: {out}")
+        if "SUCCESS" in out or "ALREADY_ACTIVE" in out:
+            logger.info("[Hotspot] Windows Mobile Hotspot started OK (WinRT).")
+            return True
+        logger.warning(f"[Hotspot] Mobile Hotspot failed: {out}")
+        return False
     except Exception as e:
-        return {"supported": False, "reason": str(e)}
+        logger.warning(f"[Hotspot] setup_mobile_hotspot_ps error: {e}")
+        return False
+
+
+def _check_icssvc_available():
+    """Kiem tra Windows Mobile Hotspot service (icssvc) co kha dung khong."""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-Service icssvc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status"],
+            capture_output=True, text=True, timeout=5
+        )
+        return r.stdout.strip().lower() in ("running", "stopped")
+    except Exception:
+        return False
+
