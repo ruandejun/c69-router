@@ -32,6 +32,9 @@ class SettingsUpdatePayload(BaseModel):
     block_direct_devices: bool = False
     direct_whitelist: List[str] = []
     bypass_cidrs: List[str] = []
+    wifi_hotspot_enabled: bool = False
+    wifi_hotspot_ssid: str = "C69-Router"
+    wifi_hotspot_password: str = "c69router123"
 
 
 @router.get("")
@@ -62,6 +65,9 @@ def update_settings(
     config.block_direct_devices = payload.block_direct_devices
     config.direct_whitelist = payload.direct_whitelist
     config.bypass_cidrs = payload.bypass_cidrs
+    config.wifi_hotspot_enabled = payload.wifi_hotspot_enabled
+    config.wifi_hotspot_ssid = payload.wifi_hotspot_ssid
+    config.wifi_hotspot_password = payload.wifi_hotspot_password
 
     save_config(config)
 
@@ -164,3 +170,80 @@ def sync_dns_interfaces(config=Depends(get_config)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/hotspot-check")
+def check_hotspot(config=Depends(get_config)):
+    """Kiểm tra WiFi Hosted Network: driver có hỗ trợ không, trạng thái hiện tại.
+
+    Dùng để UI hiển thị trước khi user bật wifi_hotspot_enabled.
+    """
+    import subprocess
+    from app.network_setup import check_hosted_network_supported, get_hosted_network_adapter
+
+    hw_check = check_hosted_network_supported()
+
+    # Kiểm tra trạng thái hotspot hiện tại (đang chạy hay không)
+    hotspot_running = False
+    hotspot_ssid = ""
+    try:
+        r = subprocess.run(
+            ["netsh", "wlan", "show", "hostednetwork"],
+            capture_output=True, text=True, timeout=5
+        )
+        out = r.stdout.lower()
+        hotspot_running = "started" in out or "đã bắt đầu" in out
+        # Lấy SSID
+        for line in r.stdout.splitlines():
+            if "ssid" in line.lower() and ":" in line:
+                hotspot_ssid = line.split(":", 1)[-1].strip()
+                break
+    except Exception:
+        pass
+
+    hotspot_adapter = get_hosted_network_adapter() if hotspot_running else None
+
+    return {
+        "driver_supported": hw_check["supported"],
+        "driver_reason": hw_check["reason"],
+        "hotspot_running": hotspot_running,
+        "hotspot_ssid": hotspot_ssid,
+        "hotspot_adapter": hotspot_adapter,
+        "wifi_hotspot_enabled": getattr(config, "wifi_hotspot_enabled", False),
+        "wifi_hotspot_ssid": getattr(config, "wifi_hotspot_ssid", "C69-Router"),
+    }
+
+
+@router.post("/hotspot-restart")
+def restart_hotspot(config=Depends(get_config)):
+    """Restart WiFi hotspot thủ công (dùng khi hotspot bị tắt/lỗi sau khi ngủ màn hình)."""
+    from app.network_setup import setup_hosted_network, get_hosted_network_adapter
+
+    if not getattr(config, "wifi_hotspot_enabled", False):
+        raise HTTPException(status_code=400, detail="wifi_hotspot_enabled=False trong config. Bật trước trong Settings.")
+
+    ssid = getattr(config, "wifi_hotspot_ssid", "C69-Router") or "C69-Router"
+    pwd  = getattr(config, "wifi_hotspot_password", "c69router123") or "c69router123"
+
+    ok = setup_hosted_network(ssid=ssid, password=pwd)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Không thể khởi động hotspot. Kiểm tra driver WiFi.")
+
+    import time
+    adapter = None
+    for _ in range(10):
+        adapter = get_hosted_network_adapter()
+        if adapter:
+            break
+        time.sleep(0.5)
+
+    return {
+        "status": "success" if adapter else "warning",
+        "ssid": ssid,
+        "adapter": adapter,
+        "message": (
+            f"Hotspot '{ssid}' đã khởi động. Virtual adapter: {adapter}."
+            if adapter else
+            "Hotspot khởi động nhưng không tìm được virtual adapter."
+        ),
+    }

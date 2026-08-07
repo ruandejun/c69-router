@@ -99,8 +99,17 @@ class AppConfig(BaseModel):
     # mà không cần bấm lại. 0 = không rotate per-device (theo global auto_rotate_minutes).
     default_device_rotate_minutes: int = 0
 
+    # ── WiFi Hotspot (Hosted Network) ──
+    # Khi bật: c69-router tự động tạo WiFi hotspot khi khởi động (dùng netsh wlan hostednetwork).
+    # Laptop chỉ cần 1 USB WiFi (hoặc card WiFi tích hợp) — phone kết nối qua hotspot thay vì dây.
+    # Virtual adapter được tạo ra sẽ tự động được dùng làm lan_interface.
+    wifi_hotspot_enabled: bool = False
+    wifi_hotspot_ssid: str = "C69-Router"
+    wifi_hotspot_password: str = "c69router123"
+
     # ── Data ──
     proxies: List[ProxyConfig] = Field(default_factory=list)
+
 
 
 # ─── Config Load / Save ─────────────────────────────────

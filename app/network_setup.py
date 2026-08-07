@@ -1137,8 +1137,250 @@ def optimize_tcp_stack(tun_interface_name: str = "GenRouterTUN") -> dict:
             results["ps_error"] = (res.stderr or "").strip()[:200]
     except Exception as e:
         results["exception"] = str(e)
-
     ok = sum(1 for v in results.values() if v is True)
     logger.info(f"[PerfOpt] TCP stack: {ok}/{len(results)} applied")
     return results
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WiFi Hotspot (Hosted Network) — netsh wlan hostednetwork
+# Dùng cho laptop: card WiFi tích hợp bắt internet (WAN), USB WiFi phát hotspot (LAN).
+# Hoặc: chỉ 1 card WiFi duy nhất — bắt WAN + phát hotspot cùng lúc (hiệu suất thấp hơn).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_usb_wifi_adapter(exclude_wan_interface: str = "") -> dict:
+    """Phát hiện USB WiFi adapter phù hợp nhất để làm LAN hotspot.
+
+    Ưu tiên theo thứ tự:
+    1. USB WiFi adapter (BusType=USB, MediaType=NativeWifi) — tốt nhất: tách biệt hoàn toàn
+    2. Card WiFi tích hợp KHÁC với WAN interface — nếu laptop có 2 card WiFi
+    3. None nếu không tìm thấy
+
+    Returns:
+        dict với keys: name, description, mac, is_usb, status
+        None nếu không tìm thấy adapter phù hợp.
+    """
+    if platform.system() != "Windows":
+        return None
+
+    try:
+        # Lấy tất cả WiFi adapter (NativeWifi / 802.11), bao gồm cả đang Down
+        ps_script = r"""
+$adapters = Get-NetAdapter | Where-Object {
+    $_.PhysicalMediaType -eq 'NativeWifi' -or
+    $_.PhysicalMediaType -eq '802.11' -or
+    $_.InterfaceDescription -like '*Wi-Fi*' -or
+    $_.InterfaceDescription -like '*Wireless*' -or
+    $_.InterfaceDescription -like '*802.11*' -or
+    $_.InterfaceDescription -like '*WLAN*'
+}
+foreach ($a in $adapters) {
+    $busType = ''
+    try {
+        $pnp = Get-PnpDevice -InstanceId $a.PnpDeviceID -ErrorAction SilentlyContinue
+        if ($pnp) {
+            $loc = (Get-PnpDeviceProperty -InstanceId $a.PnpDeviceID -KeyName 'DEVPKEY_Device_LocationInfo' -ErrorAction SilentlyContinue).Data
+            if ($loc -like 'USB*' -or $a.PnpDeviceID -like 'USB*') { $busType = 'USB' }
+        }
+    } catch {}
+    Write-Output "$($a.Name)|$($a.InterfaceDescription)|$($a.MacAddress)|$busType|$($a.Status)"
+}
+"""
+        res = _run_ps_script(ps_script, timeout=10)
+        lines = [l.strip() for l in res.stdout.strip().splitlines() if '|' in l]
+
+        usb_candidates = []
+        other_wifi = []
+
+        for line in lines:
+            parts = line.split('|')
+            if len(parts) < 5:
+                continue
+            name, desc, mac, bus_type, status = parts[0], parts[1], parts[2], parts[3], parts[4]
+
+            # Bỏ qua virtual adapters và WAN interface
+            if any(x in desc for x in ['Virtual', 'Wintun', 'Hyper-V', 'VMware', 'Loopback', 'Microsoft Wi-Fi Direct']):
+                continue
+            if exclude_wan_interface and name == exclude_wan_interface:
+                continue
+
+            info = {"name": name, "description": desc, "mac": mac, "is_usb": bus_type == "USB", "status": status}
+
+            if bus_type == "USB":
+                usb_candidates.append(info)
+            else:
+                other_wifi.append(info)
+
+        # Ưu tiên USB WiFi, sau đó WiFi tích hợp khác WAN
+        if usb_candidates:
+            chosen = usb_candidates[0]
+            logger.info(f"[Hotspot] Detected USB WiFi adapter: {chosen['name']} ({chosen['description']})")
+            return chosen
+        if other_wifi:
+            chosen = other_wifi[0]
+            logger.info(f"[Hotspot] No USB WiFi found. Using built-in WiFi adapter: {chosen['name']} ({chosen['description']})")
+            return chosen
+
+        logger.info("[Hotspot] No suitable WiFi adapter found for hotspot.")
+        return None
+
+    except Exception as e:
+        logger.warning(f"[Hotspot] detect_usb_wifi_adapter error: {e}")
+        return None
+
+
+def setup_hosted_network(ssid: str = "C69-Router", password: str = "c69router123") -> bool:
+    """Tạo và khởi động Windows Hosted Network (WiFi hotspot) qua netsh.
+
+    netsh wlan hostednetwork hoạt động trên Windows 7-11, không cần thư viện ngoài.
+    Windows tạo 1 virtual adapter "Microsoft Hosted Network Virtual Adapter" (hoặc
+    "Microsoft Wi-Fi Direct Virtual Adapter") để bridge traffic qua card WiFi vật lý.
+
+    Args:
+        ssid: Tên WiFi phát ra (mặc định: C69-Router)
+        password: Mật khẩu WiFi (tối thiểu 8 ký tự)
+
+    Returns:
+        True nếu hotspot khởi động thành công, False nếu lỗi.
+    """
+    if platform.system() != "Windows":
+        logger.warning("[Hotspot] setup_hosted_network chỉ hỗ trợ Windows.")
+        return False
+
+    if len(password) < 8:
+        password = password + "12345678"[:8 - len(password)]
+
+    logger.info(f"[Hotspot] Setting up Hosted Network: SSID='{ssid}' ...")
+
+    try:
+        # Bước 1: Cấu hình SSID + password
+        r1 = subprocess.run(
+            ["netsh", "wlan", "set", "hostednetwork",
+             "mode=allow", f"ssid={ssid}", f"key={password}"],
+            capture_output=True, text=True, timeout=10
+        )
+        if r1.returncode != 0 and "error" in r1.stdout.lower():
+            logger.error(f"[Hotspot] netsh set hostednetwork failed: {r1.stdout.strip()}")
+            return False
+        logger.info(f"[Hotspot] Hosted network configured: {r1.stdout.strip()}")
+
+        # Bước 2: Khởi động hosted network
+        r2 = subprocess.run(
+            ["netsh", "wlan", "start", "hostednetwork"],
+            capture_output=True, text=True, timeout=10
+        )
+        output = r2.stdout.strip()
+        logger.info(f"[Hotspot] netsh start hostednetwork: {output}")
+
+        if "started" in output.lower() or "đã bắt đầu" in output.lower():
+            logger.info("[Hotspot] ✓ WiFi hotspot started successfully.")
+            return True
+        elif "cannot" in output.lower() or "không thể" in output.lower() or "not supported" in output.lower():
+            logger.warning(
+                f"[Hotspot] ⚠ Hosted network không hỗ trợ trên adapter này. "
+                f"Thử: netsh wlan show drivers | grep 'Hosted network supported'. "
+                f"Output: {output}"
+            )
+            return False
+        else:
+            # Có thể đã chạy rồi hoặc trạng thái không rõ — check lại
+            r3 = subprocess.run(
+                ["netsh", "wlan", "show", "hostednetwork"],
+                capture_output=True, text=True, timeout=5
+            )
+            if "started" in r3.stdout.lower() or "đã bắt đầu" in r3.stdout.lower():
+                logger.info("[Hotspot] ✓ WiFi hotspot already running.")
+                return True
+            logger.warning(f"[Hotspot] Hotspot status unclear: {output}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.error("[Hotspot] netsh command timed out.")
+        return False
+    except Exception as e:
+        logger.error(f"[Hotspot] setup_hosted_network error: {e}")
+        return False
+
+
+def get_hosted_network_adapter() -> str:
+    """Lấy tên Windows virtual adapter được tạo ra cho Hosted Network.
+
+    Sau khi netsh start hostednetwork, Windows tạo 1 virtual adapter thường có tên
+    'Local Area Connection* X' hoặc 'Wi-Fi Direct Virtual Adapter #X'. Hàm này tìm
+    adapter đó để c69-router dùng làm LAN interface.
+
+    Returns:
+        Tên adapter (str) nếu tìm thấy, None nếu không.
+    """
+    if platform.system() != "Windows":
+        return None
+
+    try:
+        # Hosted Network virtual adapter có InterfaceDescription chứa
+        # "Microsoft Hosted Network Virtual Adapter" hoặc "Wi-Fi Direct Virtual Adapter"
+        # Lọc chính xác để không nhầm với adapter khác
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-NetAdapter | Where-Object { "
+             "$_.InterfaceDescription -like '*Hosted Network Virtual*' -or "
+             "$_.InterfaceDescription -like '*Wi-Fi Direct Virtual*' "
+             "} | Sort-Object ifIndex | Select-Object -First 1 -ExpandProperty Name"],
+            capture_output=True, text=True, timeout=8
+        )
+        name = result.stdout.strip()
+        if name:
+            logger.info(f"[Hotspot] Found hosted network virtual adapter: '{name}'")
+            return name
+
+        logger.warning("[Hotspot] Hosted network virtual adapter not found.")
+        return None
+
+    except Exception as e:
+        logger.warning(f"[Hotspot] get_hosted_network_adapter error: {e}")
+        return None
+
+
+def stop_hosted_network():
+    """Dừng Windows Hosted Network."""
+    if platform.system() != "Windows":
+        return
+    try:
+        r = subprocess.run(
+            ["netsh", "wlan", "stop", "hostednetwork"],
+            capture_output=True, text=True, timeout=10
+        )
+        logger.info(f"[Hotspot] stop hostednetwork: {r.stdout.strip()}")
+    except Exception as e:
+        logger.warning(f"[Hotspot] stop_hosted_network error: {e}")
+
+
+def check_hosted_network_supported() -> dict:
+    """Kiểm tra WiFi card hiện tại có hỗ trợ Hosted Network không.
+
+    Returns:
+        dict {"supported": bool, "reason": str}
+    """
+    if platform.system() != "Windows":
+        return {"supported": False, "reason": "Windows only"}
+
+    try:
+        result = subprocess.run(
+            ["netsh", "wlan", "show", "drivers"],
+            capture_output=True, text=True, timeout=8
+        )
+        out = result.stdout.lower()
+        if "hosted network supported  : yes" in out or "hosted network supported: yes" in out:
+            return {"supported": True, "reason": "Driver supports hosted network"}
+        elif "hosted network supported  : no" in out or "hosted network supported: no" in out:
+            return {"supported": False, "reason": "Driver does NOT support hosted network. Try updating WiFi driver."}
+        else:
+            # Thử parse dòng có "hosted network"
+            for line in result.stdout.splitlines():
+                if "hosted network" in line.lower():
+                    return {
+                        "supported": "yes" in line.lower(),
+                        "reason": line.strip()
+                    }
+            return {"supported": False, "reason": f"Cannot determine support. Output: {result.stdout[:200]}"}
+    except Exception as e:
+        return {"supported": False, "reason": str(e)}

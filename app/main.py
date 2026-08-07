@@ -661,7 +661,59 @@ async def lifespan(app: FastAPI):
     else:
         logger.info(f"[Main] ✓ LAN interface '{config.lan_interface}' hợp lệ.")
 
+    # 3.7 WiFi Hotspot auto-setup — dùng cho laptop + USB WiFi (không cần dây LAN).
+    # Nếu config.wifi_hotspot_enabled=True: tự động tạo Windows Hosted Network (netsh),
+    # sau đó cập nhật lan_interface sang virtual adapter được Windows tạo ra.
+    # Flow: c69-router chạy → hotspot bật → phone kết nối WiFi → DHCP → proxy routing.
+    _hotspot_was_started = False
+    if platform.system() == "Windows" and getattr(config, "wifi_hotspot_enabled", False):
+        from app.network_setup import (
+            setup_hosted_network, get_hosted_network_adapter,
+            check_hosted_network_supported
+        )
+        logger.info("[Main] WiFi Hotspot mode enabled — setting up hosted network...")
+
+        # Kiểm tra driver hỗ trợ trước
+        hw_check = check_hosted_network_supported()
+        if not hw_check["supported"]:
+            logger.warning(
+                f"[Main] ⚠ WiFi card không hỗ trợ Hosted Network: {hw_check['reason']}. "
+                f"Bỏ qua hotspot, dùng lan_interface từ config."
+            )
+        else:
+            ssid = getattr(config, "wifi_hotspot_ssid", "C69-Router") or "C69-Router"
+            pwd  = getattr(config, "wifi_hotspot_password", "c69router123") or "c69router123"
+            ok = setup_hosted_network(ssid=ssid, password=pwd)
+            if ok:
+                _hotspot_was_started = True
+                # Chờ tối đa 5s để Windows tạo virtual adapter
+                hotspot_adapter = None
+                for _attempt in range(10):
+                    hotspot_adapter = get_hosted_network_adapter()
+                    if hotspot_adapter:
+                        break
+                    time.sleep(0.5)
+
+                if hotspot_adapter:
+                    logger.info(
+                        f"[Main] ✓ Hotspot '{ssid}' active. "
+                        f"Virtual adapter: '{hotspot_adapter}' → dùng làm LAN interface."
+                    )
+                    config.lan_interface = hotspot_adapter
+                    save_config(config)
+                else:
+                    logger.warning(
+                        "[Main] ⚠ Không tìm được virtual adapter sau khi hotspot start. "
+                        "Tiếp tục với lan_interface từ config."
+                    )
+            else:
+                logger.warning(
+                    "[Main] ⚠ Không thể khởi động hotspot. "
+                    "Tiếp tục với lan_interface từ config."
+                )
+
     # 4. Setup network (LAN static IP, IP forwarding, firewall, binaries)
+
     # Đảm bảo lan_gateway_ip có giá trị mặc định hợp lệ trước khi dùng
     if not config.lan_gateway_ip:
         config.lan_gateway_ip = "192.168.10.1"
@@ -873,6 +925,14 @@ async def lifespan(app: FastAPI):
         _singbox_manager.stop()
     if _mac_registry:
         _mac_registry.save()
+    # Dừng WiFi hotspot nếu đã start
+    if _hotspot_was_started:
+        try:
+            from app.network_setup import stop_hosted_network
+            stop_hosted_network()
+            logger.info("[Main] WiFi hotspot stopped.")
+        except Exception as _he:
+            logger.warning(f"[Main] Failed to stop hotspot: {_he}")
     logger.info("[Main] Shutdown complete.")
 
 
