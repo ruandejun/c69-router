@@ -942,7 +942,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"[Main] ✓ WAN interface '{config.wan_interface}' có route internet hợp lệ.")
 
     # 3.6 Smart LAN detection: Ethernet thuan LAN (khong WAN route) > Ethernet bat ky
-    # > WiFi adapter thu 2 (tu dong bat hotspot) > WAN WiFi lam hotspot (Tier 4).
+    # > WiFi adapter thu 2 (hotspot) > WAN WiFi lam hotspot (Tier 4).
     # allow_wan_hotspot=True khi wifi_hotspot_enabled: tranh re-detect vo han o Tier 4.
     hotspot_already_on = getattr(config, "wifi_hotspot_enabled", False)
     lan_valid = is_lan_interface_valid(
@@ -956,7 +956,20 @@ async def lifespan(app: FastAPI):
             f"[Main] LAN interface '{config.lan_interface}' khong hop le "
             f"-> smart detect: '{detected_lan}' (needs_hotspot={needs_hotspot})"
         )
-        config.lan_interface = detected_lan
+
+        # QUAN TRONG: Chi set lan_interface = detected_lan khi KHONG phai Tier 4
+        # (Tier 4: detected_lan = wan_interface, neu set ngay thi setup_network se
+        # ghi de IP len WiFi WAN card -> mat internet tren chinh laptop).
+        # Tier 4 chi bat wifi_hotspot_enabled, con lan_interface se duoc cap nhat
+        # sang virtual adapter trong step 3.7 sau khi hotspot bat thanh cong.
+        is_tier4 = (detected_lan == config.wan_interface)
+        if not is_tier4:
+            config.lan_interface = detected_lan
+        else:
+            logger.info(
+                f"[Main] Tier 4 hotspot mode: giu lan_interface='{config.lan_interface}' "
+                f"(se cap nhat sang virtual adapter sau khi hotspot bat)"
+            )
 
         # Neu detect duoc WiFi adapter lam LAN -> tu dong bat hotspot
         if needs_hotspot and not hotspot_already_on:
@@ -1029,23 +1042,44 @@ async def lifespan(app: FastAPI):
 
     # 4. Setup network (LAN static IP, IP forwarding, firewall, binaries)
 
-    # Đảm bảo lan_gateway_ip có giá trị mặc định hợp lệ trước khi dùng
+    # Dam bao lan_gateway_ip co gia tri mac dinh hop le truoc khi dung
     if not config.lan_gateway_ip:
         config.lan_gateway_ip = "192.168.10.1"
         save_config(config)
-        logger.info(f"[Main] lan_gateway_ip không có trong config, dùng mặc định: 192.168.10.1")
-    try:
-        setup_network(
-            lan_interface=config.lan_interface,
-            wan_interface=config.wan_interface,
-            lan_subnet=f"{config.lan_gateway_ip.rsplit('.', 1)[0]}.0/24",
-            lan_gateway_ip=config.lan_gateway_ip,
-            lan_subnet_mask=config.lan_subnet_mask,
+        logger.info(f"[Main] lan_gateway_ip khong co trong config, dung mac dinh: 192.168.10.1")
+
+    # SAFETY GUARD: neu lan_interface == wan_interface (hotspot chua bat duoc, virtual
+    # adapter chua tao ra), KHONG goi setup_network voi LAN=WAN vi ensure_lan_ip_assigned
+    # se xoa IP DHCP cua WiFi WAN card va gan IP tinh 192.168.10.1 -> mat internet.
+    # Chi setup NAT va firewall, bo qua phan IP/forwarding cua LAN.
+    if config.lan_interface == config.wan_interface:
+        logger.warning(
+            f"[Main] SAFETY: lan_interface == wan_interface ('{config.wan_interface}') "
+            f"— bo qua setup_network de khong mat internet. "
+            f"Hotspot chua bat/virtual adapter chua san sang."
         )
-    except Exception as e:
-        logger.error(f"[Main] Network setup error: {e}")
-        from app.error_reporter import report_error
-        report_error("Startup", f"Network setup error: {e}", level="critical", exc=e)
+        try:
+            from app.network_setup import setup_firewall_rules, download_binaries
+            download_binaries()
+            setup_firewall_rules()
+            # Chi setup NAT khong lien quan den LAN IP
+            setup_nat(wan_interface=config.wan_interface,
+                      lan_subnet=f"{config.lan_gateway_ip.rsplit('.', 1)[0]}.0/24")
+        except Exception as e:
+            logger.warning(f"[Main] Partial network setup error (safe mode): {e}")
+    else:
+        try:
+            setup_network(
+                lan_interface=config.lan_interface,
+                wan_interface=config.wan_interface,
+                lan_subnet=f"{config.lan_gateway_ip.rsplit('.', 1)[0]}.0/24",
+                lan_gateway_ip=config.lan_gateway_ip,
+                lan_subnet_mask=config.lan_subnet_mask,
+            )
+        except Exception as e:
+            logger.error(f"[Main] Network setup error: {e}")
+            from app.error_reporter import report_error
+            report_error("Startup", f"Network setup error: {e}", level="critical", exc=e)
 
     # 4.0 TCP Stack Optimization — apply in background to avoid blocking startup
     # Optimize Windows TCP: Nagle off, ICWV=10, RSS, DCA, CTCP, ECN
