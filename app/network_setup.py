@@ -369,7 +369,7 @@ def smart_detect_lan(exclude_interface: str = "") -> tuple:
 
         ethernet_no_route = []   # Tier 1: Ethernet thuan LAN (khong co WAN route)
         ethernet_any = []        # Tier 2: Ethernet bat ky
-        wifi_adapters = []       # Tier 3: WiFi card thu 2
+        wifi_adapters = []       # Tier 3: WiFi card thu 2 (khac WAN)
 
         for line in lines:
             parts = line.split('|')
@@ -389,29 +389,59 @@ def smart_detect_lan(exclude_interface: str = "") -> tuple:
             elif is_wifi:
                 wifi_adapters.append(name)
 
-        # Tier 1: Ethernet thuan LAN (uu tien nhat)
+        # Tier 1: Ethernet thuan LAN (uu tien nhat - khong co WAN route)
         if ethernet_no_route:
             chosen = ethernet_no_route[0]
-            logger.info(f"[Network] Smart LAN detect: Ethernet (no-WAN-route) = '{chosen}'")
+            logger.info(f"[Network] Smart LAN detect Tier1: Ethernet (no-WAN-route) = '{chosen}'")
             return (chosen, False)
 
         # Tier 2: Ethernet bat ky (khac WAN)
         if ethernet_any:
             chosen = ethernet_any[0]
-            logger.info(f"[Network] Smart LAN detect: Ethernet = '{chosen}'")
+            logger.info(f"[Network] Smart LAN detect Tier2: Ethernet = '{chosen}'")
             return (chosen, False)
 
-        # Tier 3: WiFi card thu 2 -> can bat hotspot
+        # Tier 3: WiFi card thu 2 (khac WAN, la card vat ly rieng)
         if wifi_adapters:
             chosen = wifi_adapters[0]
-            logger.info(f"[Network] Smart LAN detect: WiFi adapter '{chosen}' -> will use as hotspot")
+            logger.info(f"[Network] Smart LAN detect Tier3: 2nd WiFi '{chosen}' -> hotspot")
             return (chosen, True)  # needs_hotspot=True
+
+        # Tier 4: WAN chinh la WiFi -> dung chinh no de phat hotspot
+        # Windows tao "Microsoft Wi-Fi Direct Virtual Adapter" de bridge traffic.
+        # Khong can USB WiFi thu 2 - 1 card WiFi vua ket noi internet vua phat hotspot.
+        if exclude_interface:
+            wan_media = _get_adapter_media_type(exclude_interface)
+            wan_is_wifi = ('wifi' in wan_media.lower() or '802.11' in wan_media.lower()
+                           or 'nativewifi' in wan_media.lower())
+            if wan_is_wifi:
+                logger.info(
+                    f"[Network] Smart LAN detect Tier4: WAN '{exclude_interface}' is WiFi "
+                    f"-> same card can host hotspot (Virtual Adapter will be created)"
+                )
+                return (exclude_interface, True)  # needs_hotspot=True, LAN=virtual adapter sau
 
     except Exception as e:
         logger.warning(f"[Network] smart_detect_lan error: {e}")
 
-    logger.warning("[Network] No suitable LAN interface found, falling back to 'Ethernet 3'")
+    logger.warning("[Network] No suitable LAN interface found, using fallback 'Ethernet 3'")
     return ("Ethernet 3", False)
+
+
+def _get_adapter_media_type(adapter_name: str) -> str:
+    """Lay PhysicalMediaType cua adapter (e.g. '802.3', 'NativeWifi'). Tra ve '' neu loi."""
+    if not adapter_name or platform.system() != "Windows":
+        return ""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-NetAdapter -Name '{adapter_name}' -ErrorAction SilentlyContinue).PhysicalMediaType"],
+            capture_output=True, text=True, timeout=5
+        )
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
 
 
 def is_lan_interface_valid(interface_name: str, wan_interface: str = "") -> bool:
@@ -1531,51 +1561,129 @@ def check_hosted_network_supported() -> dict:
 def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123"):
     """Bat Windows Mobile Hotspot qua PowerShell WinRT API.
 
-    Fallback cho laptop khong ho tro netsh wlan hostednetwork (Intel AX201/AX210).
+    Ho tro: Windows 10 1607+ / Windows 11.
+    Mot card WiFi co the vua ket noi internet (WAN) vua phat hotspot (AP mode).
+    Windows tu tao 'Microsoft Wi-Fi Direct Virtual Adapter' khi bat.
+
     Returns: True neu thanh cong.
     """
     if platform.system() != "Windows":
         return False
-    logger.info(f"[Hotspot] Trying Windows Mobile Hotspot (WinRT): SSID='{ssid}'")
-    ps_script = (
-        "Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null\n"
-        "function Await($t,$rt){$m=[System.WindowsRuntimeSystemExtensions].GetMethod("
-        "'AsTask',[System.Reflection.BindingFlags]'Public,Static,FlattenHierarchy',"
-        "$null,(New-Object System.Type[] 2 -ArgumentList $t.GetType(),$rt),$null);"
-        "$n=$m.Invoke($null,@($t,$null));$n.Wait();$n.Result}\n"
-        "[void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,"
-        "Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]\n"
-        "[void][Windows.Networking.Connectivity.NetworkInformation,"
-        "Windows.Networking.Connectivity,ContentType=WindowsRuntime]\n"
-        "$profile=[Windows.Networking.Connectivity.NetworkInformation]"
-        "::GetInternetConnectionProfile()\n"
-        "if($null -eq $profile){Write-Output 'ERROR:NoInternetProfile';exit 1}\n"
-        "$mgr=[Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]"
-        "::CreateFromConnectionProfile($profile)\n"
-        "if($null -eq $mgr){Write-Output 'ERROR:NoTetheringManager';exit 1}\n"
-        "$cfg=$mgr.GetCurrentAccessPointConfiguration()\n"
-        f"$cfg.Ssid='{ssid}'\n"
-        f"$cfg.Passphrase='{password}'\n"
-        "Await($mgr.ConfigureAccessPointAsync($cfg))"
-        "([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult])"
-        "|Out-Null\n"
-        "if($mgr.TetheringOperationalState -eq 1){Write-Output 'ALREADY_ACTIVE';exit 0}\n"
-        "$r=Await($mgr.StartTetheringAsync())"
-        "([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult])\n"
-        "if($r.Status -eq 0){Write-Output 'SUCCESS'}else{Write-Output \"ERROR:$($r.Status)\"}\n"
-    )
+
+    logger.info(f"[Hotspot] Starting Windows Mobile Hotspot WinRT: SSID='{ssid}'")
+
+    # PS script duoc viet ra file tam de tranh van de escaping
+    # Su dung MakeGenericMethod de tim dung overload AsTask<TResult>
+    ps_content = f"""
+Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
+
+# Load WinRT types
+try {{
+    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,
+        Windows.Networking.NetworkOperators, ContentType=WindowsRuntime]
+    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult,
+        Windows.Networking.NetworkOperators, ContentType=WindowsRuntime]
+    [void][Windows.Networking.Connectivity.NetworkInformation,
+        Windows.Networking.Connectivity, ContentType=WindowsRuntime]
+}} catch {{
+    Write-Output "ERROR:TypeLoad:$($_.Exception.Message)"
+    exit 1
+}}
+
+# Tim AsTask<TResult>(IAsyncOperation<TResult>) dung - lay method co 1 generic arg
+$resultType = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]
+$asTaskMethod = $null
+foreach ($m in [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeSystemExtensions].GetMethods()) {{
+    if ($m.Name -ne 'AsTask') {{ continue }}
+    if (-not $m.IsGenericMethodDefinition) {{ continue }}
+    if ($m.GetGenericArguments().Count -ne 1) {{ continue }}
+    $params = $m.GetParameters()
+    if ($params.Count -ne 1) {{ continue }}
+    $asTaskMethod = $m.MakeGenericMethod($resultType)
+    break
+}}
+if ($null -eq $asTaskMethod) {{
+    Write-Output "ERROR:AsTaskNotFound"
+    exit 1
+}}
+
+function Await-Op($op) {{
+    $task = $asTaskMethod.Invoke($null, @($op))
+    $task.Wait(30000) | Out-Null
+    return $task.Result
+}}
+
+try {{
+    $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+    if ($null -eq $profile) {{ Write-Output "ERROR:NoInternetProfile"; exit 1 }}
+
+    $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
+    if ($null -eq $mgr) {{ Write-Output "ERROR:NoTetheringManager"; exit 1 }}
+
+    # Ket noi hien tai (0=Off, 1=On, 2=InTransition)
+    $state = $mgr.TetheringOperationalState
+    if ($state -eq 1) {{
+        Write-Output "ALREADY_ACTIVE"
+        exit 0
+    }}
+
+    # Cau hinh SSID + password
+    $cfg = $mgr.GetCurrentAccessPointConfiguration()
+    $cfg.Ssid = '{ssid}'
+    $cfg.Passphrase = '{password}'
+    Await-Op ($mgr.ConfigureAccessPointAsync($cfg)) | Out-Null
+
+    # Bat hotspot
+    $r = Await-Op ($mgr.StartTetheringAsync())
+    if ($r.Status -eq 0) {{
+        Write-Output "SUCCESS"
+    }} else {{
+        Write-Output "ERROR:Status=$($r.Status)"
+    }}
+}} catch {{
+    Write-Output "EXCEPTION:$($_.Exception.InnerException.Message ?? $_.Exception.Message)"
+}}
+"""
+    import tempfile
+    import os as _os
+    fd, ps_path = tempfile.mkstemp(suffix=".ps1", prefix="c69_hotspot_")
     try:
-        res = _run_ps_script(ps_script, timeout=30)
-        out = (res.stdout or "").strip()
-        logger.info(f"[Hotspot] Mobile Hotspot PS: {out}")
+        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(ps_content)
+
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_path],
+            capture_output=True, text=True, timeout=45
+        )
+        out = (result.stdout or "").strip()
+        err = (result.stderr or "").strip()
+
+        if out:
+            logger.info(f"[Hotspot] WinRT PS stdout: {out}")
+        if err:
+            logger.warning(f"[Hotspot] WinRT PS stderr: {err[:300]}")
+
         if "SUCCESS" in out or "ALREADY_ACTIVE" in out:
-            logger.info("[Hotspot] Windows Mobile Hotspot started OK (WinRT).")
+            logger.info("[Hotspot] Windows Mobile Hotspot started OK.")
             return True
-        logger.warning(f"[Hotspot] Mobile Hotspot failed: {out}")
+
+        if "ERROR:NoInternetProfile" in out:
+            logger.warning("[Hotspot] No internet connection profile - connect WiFi/Ethernet first.")
+        elif "EXCEPTION" in out:
+            logger.warning(f"[Hotspot] WinRT exception: {out}")
+        else:
+            logger.warning(f"[Hotspot] Mobile Hotspot failed: {out or err}")
         return False
+
     except Exception as e:
         logger.warning(f"[Hotspot] setup_mobile_hotspot_ps error: {e}")
         return False
+    finally:
+        try:
+            _os.remove(ps_path)
+        except Exception:
+            pass
+
 
 
 def _check_icssvc_available():
