@@ -941,20 +941,33 @@ async def lifespan(app: FastAPI):
     else:
         logger.info(f"[Main] ✓ WAN interface '{config.wan_interface}' có route internet hợp lệ.")
 
-    # 3.6 Autodetect LAN interface: nếu config.lan_interface không tồn tại/không UP/trùng
-    # WAN (đổi máy mới, tên card khác "Ethernet 3" mặc định...), tự quét card mạng CÓ
-    # DÂY nào đang cắm mà KHÔNG PHẢI card internet (WAN) để dùng làm LAN bridge — không
-    # cần người dùng tự chọn tay trên máy mới nữa.
+    # 3.6 Smart LAN detection: Ethernet thuan LAN (khong WAN route) > Ethernet bat ky
+    # > WiFi adapter thu 2 (tu dong bat hotspot). Giu config neu interface hien tai van hop le.
     if not is_lan_interface_valid(config.lan_interface, wan_interface=config.wan_interface):
-        detected_lan = detect_lan_interface(exclude_interface=config.wan_interface)
+        detected_lan, needs_hotspot = smart_detect_lan(exclude_interface=config.wan_interface)
         logger.warning(
-            f"[Main] ⚠ LAN interface '{config.lan_interface}' không hợp lệ (không tồn tại/"
-            f"không UP/trùng WAN) — tự động chuyển sang '{detected_lan}'."
+            f"[Main] LAN interface '{config.lan_interface}' khong hop le "
+            f"-> smart detect: '{detected_lan}' (needs_hotspot={needs_hotspot})"
         )
         config.lan_interface = detected_lan
+
+        # Neu detect duoc WiFi adapter lam LAN -> tu dong bat hotspot
+        if needs_hotspot and not getattr(config, "wifi_hotspot_enabled", False):
+            logger.info("[Main] WiFi adapter detected as LAN -> auto-enabling wifi_hotspot")
+            config.wifi_hotspot_enabled = True
+            if not getattr(config, "wifi_hotspot_ssid", None) or config.wifi_hotspot_ssid in ("C69-Router", ""):
+                try:
+                    from app.config import _generate_hotspot_ssid
+                    config.wifi_hotspot_ssid = _generate_hotspot_ssid()
+                except Exception:
+                    config.wifi_hotspot_ssid = "C69-Router"
+            if not getattr(config, "wifi_hotspot_password", None) or config.wifi_hotspot_password in ("c69router123", ""):
+                config.wifi_hotspot_password = "matkhau123"
+
         save_config(config)
     else:
-        logger.info(f"[Main] ✓ LAN interface '{config.lan_interface}' hợp lệ.")
+        logger.info(f"[Main] LAN interface '{config.lan_interface}' hop le.")
+
 
     # 3.7 WiFi Hotspot auto-setup — dùng cho laptop + USB WiFi (không cần dây LAN).
     # Nếu config.wifi_hotspot_enabled=True: tự động tạo Windows Hosted Network (netsh),
