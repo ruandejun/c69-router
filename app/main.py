@@ -770,6 +770,131 @@ if ($script:needReboot) {
 """
 
 
+def _recover_wan_from_static_ip(wan_interface: str, lan_gateway_ip: str) -> bool:
+    """Phuc hoi WAN card neu bi gan IP tinh sai do bug cu (lan==wan ghi de IP DHCP).
+
+    Khi bug cu chay: ensure_lan_ip_assigned(WAN_card, '192.168.10.1') da:
+      1. Xoa IP DHCP cua WiFi card (mat internet)
+      2. Gan IP tinh 192.168.10.1 len WAN card
+    Ham nay phat hien va tu dong phuc hoi:
+      - Check WAN card co IP = lan_gateway_ip (vi du 192.168.10.1) khong
+      - Neu co: reset ve DHCP, tat IP tinh, xin cap lai IP tu router
+    Returns: True neu da thuc hien phuc hoi.
+    """
+    if platform.system() != "Windows" or not wan_interface or not lan_gateway_ip:
+        return False
+
+    try:
+        # Lay IP hien tai cua WAN card
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Get-NetIPAddress -InterfaceAlias '{wan_interface}' -AddressFamily IPv4 "
+             f"-ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress"],
+            capture_output=True, text=True, timeout=5
+        )
+        current_ips = [ip.strip() for ip in r.stdout.strip().splitlines() if ip.strip()]
+
+        # Phat hien: WAN card co IP = lan_gateway_ip -> bi poison boi bug cu
+        is_poisoned = lan_gateway_ip in current_ips
+
+        # Phat hien them: WAN card khong co IP DHCP hop le
+        lan_prefix = lan_gateway_ip.rsplit(".", 1)[0] + "."  # e.g. "192.168.10."
+        has_valid_wan_ip = any(
+            ip and not ip.startswith("169.254") and not ip.startswith(lan_prefix)
+            for ip in current_ips
+        )
+
+        if not is_poisoned and has_valid_wan_ip:
+            return False  # WAN card OK, khong can phuc hoi
+
+        if is_poisoned:
+            logger.warning(
+                f"[Recovery] *** WAN card '{wan_interface}' co IP {lan_gateway_ip} (LAN gateway) "
+                f"-> bi poison boi bug cu. Dang phuc hoi ve DHCP... ***"
+            )
+        else:
+            logger.warning(
+                f"[Recovery] WAN card '{wan_interface}' khong co IP DHCP hop le "
+                f"(IPs: {current_ips}). Dang thu reset DHCP..."
+            )
+
+        # Reset ve DHCP - viet file ps1 tam
+        ps_restore = (
+            f"$iface = '{wan_interface}'\n"
+            "# Xoa IP tinh (ke ca 192.168.10.1)\n"
+            "Remove-NetIPAddress -InterfaceAlias $iface -AddressFamily IPv4 "
+            "-Confirm:$false -ErrorAction SilentlyContinue | Out-Null\n"
+            "# Xoa static route\n"
+            "Remove-NetRoute -InterfaceAlias $iface -Confirm:$false "
+            "-ErrorAction SilentlyContinue | Out-Null\n"
+            "# Bat DHCP\n"
+            "Set-NetIPInterface -InterfaceAlias $iface -Dhcp Enabled "
+            "-ErrorAction SilentlyContinue\n"
+            "# Reset DNS ve tu dong\n"
+            "Set-DnsClientServerAddress -InterfaceAlias $iface "
+            "-ResetServerAddresses -ErrorAction SilentlyContinue\n"
+            "# Release & Renew IP\n"
+            "ipconfig /release $iface *>$null\n"
+            "Start-Sleep -Milliseconds 800\n"
+            "ipconfig /renew $iface *>$null\n"
+            "Write-Output 'DHCP_RESTORED'\n"
+        )
+
+        import tempfile
+        import os as _os
+        fd, ps_path = tempfile.mkstemp(suffix=".ps1", prefix="c69_wan_recovery_")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(ps_restore)
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_path],
+                capture_output=True, text=True, timeout=35
+            )
+            out = (res.stdout or "").strip()
+            err = (res.stderr or "").strip()
+
+            if "DHCP_RESTORED" in out:
+                logger.info(f"[Recovery] WAN '{wan_interface}' da reset DHCP xong. Cho IP...")
+                # Doi DHCP cap IP moi (max 10s)
+                for _ in range(20):
+                    time.sleep(0.5)
+                    r2 = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         f"Get-NetIPAddress -InterfaceAlias '{wan_interface}' "
+                         f"-AddressFamily IPv4 -ErrorAction SilentlyContinue "
+                         f"| Where-Object {{$_.PrefixOrigin -ne 'WellKnown'}} "
+                         f"| Select-Object -ExpandProperty IPAddress"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    new_ips = [ip.strip() for ip in r2.stdout.strip().splitlines() if ip.strip()]
+                    good = [ip for ip in new_ips
+                            if not ip.startswith("169.254") and ip != lan_gateway_ip]
+                    if good:
+                        logger.info(
+                            f"[Recovery] *** WAN '{wan_interface}' phuc hoi thanh cong! "
+                            f"IP DHCP moi: {good} ***"
+                        )
+                        return True
+                logger.warning(
+                    f"[Recovery] WAN '{wan_interface}' chua nhan duoc IP DHCP sau 10s. "
+                    f"Co the can cho them hoac kiem tra router."
+                )
+                return True  # Da reset xong, DHCP co the chua kip assign
+            else:
+                logger.error(f"[Recovery] DHCP restore that bai: {out or err}")
+                return False
+        finally:
+            try:
+                _os.remove(ps_path)
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.warning(f"[Recovery] WAN recovery error: {e}")
+        return False
+
+
+
 def _run_first_time_setup():
     """Chay setup_windows.bat lan dau tien neu chua co marker data/.setup_done.
 
@@ -925,7 +1050,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Main] Startup stale-IP cleanup error: {e}")
 
-    # 3.5 Xác minh WAN interface đang lưu trong config còn thực sự có internet không
+    # 3.45 RECOVERY: Phuc hoi WAN card neu bi bug cu gan IP tinh sai (lan==wan poison)
+    # Check: neu WAN card co IP = lan_gateway_ip (192.168.10.1) → reset ve DHCP truoc
+    # Dieu nay xay ra neu phien ban truoc cua c69-router da chay ensure_lan_ip_assigned
+    # nham len WAN card khi hotspot Tier4 (detected_lan = wan). Bug nay da duoc fix nhung
+    # may da chay phien ban loi thi can recovery nay de co internet lai.
+    _recover_wan_from_static_ip(
+        wan_interface=config.wan_interface,
+        lan_gateway_ip=config.lan_gateway_ip or "192.168.10.1",
+    )
+
+    # 3.5 Xac minh WAN interface dang luu trong config con thuc su co internet khong
     # (đề phòng data/config.json lỗi thời — vd copy sang máy khác, đổi tên card, card
     # WiFi đang mất kết nối — nếu không xác minh, NAT/sing-box sẽ trỏ ra card chết
     # trong khi máy có card khác đang hoạt động tốt, khiến thiết bị kết nối vào có IP
