@@ -1577,10 +1577,10 @@ def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123"):
 
     logger.info(f"[Hotspot] Starting Windows Mobile Hotspot WinRT: SSID='{ssid}'")
 
-    # PS script: dung IAsyncOperation.Status polling - KHONG can AsTask/WindowsRuntimeSystemExtensions
-    # IAsyncOperation la WinRT native, co san sau khi load WinRT namespace type
-    # Status: 0=Started/Running, 1=Completed, 2=Canceled, 3=Error
-    # GetResults() tra ket qua khi Status==1
+    # PS script WinRT hotspot - PS5.1 compatible
+    # IAsyncOperation.Status polling: 0=Running, 1=Completed, 2=Canceled, 3=Error
+    # ErrorCode la Exception object - dung .Message va .HResult
+    # TetheringCapability: 0=OK, 1=GroupPolicy, 2=HardwareLimit, 3=Operator, 4=Sku, 5=Requirements, 6=System
     ps_content = f"""
 # Load WinRT namespace types (moi type tren 1 dong - PS5.1)
 try {{
@@ -1592,8 +1592,7 @@ try {{
     exit 1
 }}
 
-# Await IAsyncOperation bang polling Status - khong can AsTask hay WindowsRuntimeSystemExtensions
-# Status: 0=Started, 1=Completed, 2=Canceled, 3=Error
+# Await IAsyncOperation bang polling Status
 function Await-WinRT($op, $timeoutSec = 30) {{
     $deadline = [System.DateTime]::Now.AddSeconds($timeoutSec)
     while ($op.Status -eq 0 -and [System.DateTime]::Now -lt $deadline) {{
@@ -1606,8 +1605,11 @@ function Await-WinRT($op, $timeoutSec = 30) {{
     }} elseif ($op.Status -eq 2) {{
         throw "Operation was canceled"
     }} else {{
-        # Status 3 = Error - lay ErrorCode
-        throw "Operation error (Status=3), ErrorCode=$($op.ErrorCode)"
+        # Status 3 = Error: ErrorCode la Exception object, dung .Message va .HResult
+        $ec = $op.ErrorCode
+        $hresult = if ($null -ne $ec) {{ "0x{{0:X8}}" -f $ec.HResult }} else {{ "unknown" }}
+        $ecMsg   = if ($null -ne $ec) {{ $ec.Message }} else {{ "no error code" }}
+        throw "WinRT Error (Status=3): HResult=$hresult, Msg=$ecMsg"
     }}
 }}
 
@@ -1615,26 +1617,48 @@ try {{
     $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
     if ($null -eq $profile) {{ Write-Output "ERROR:NoInternetProfile"; exit 1 }}
 
+    Write-Output "DIAG:Profile=$($profile.ProfileName)"
+
     $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
     if ($null -eq $mgr) {{ Write-Output "ERROR:NoTetheringManager"; exit 1 }}
 
+    # Pre-check TetheringCapability truoc khi bat
+    # 0=Enabled, 1=DisabledByGroupPolicy, 2=DisabledByHardwareLimitation
+    # 3=DisabledByOperator, 4=DisabledBySku, 5=DisabledByRequirementsNotMet, 6=DisabledBySystemCapability
+    $cap = $mgr.TetheringCapability
+    Write-Output "DIAG:TetheringCapability=$cap"
+    if ($cap -ne 0) {{
+        $capNames = @{{0="Enabled";1="DisabledByGroupPolicy";2="DisabledByHardwareLimitation";3="DisabledByOperator";4="DisabledBySku";5="DisabledByRequirementsNotMet";6="DisabledBySystemCapability"}}
+        $capName = if ($capNames.ContainsKey([int]$cap)) {{ $capNames[[int]$cap] }} else {{ "Unknown($cap)" }}
+        Write-Output "ERROR:CapabilityBlocked:$capName"
+        exit 1
+    }}
+
     # Trang thai hien tai: 0=Off, 1=On, 2=InTransition
     $state = $mgr.TetheringOperationalState
+    Write-Output "DIAG:OperationalState=$state"
     if ($state -eq 1) {{ Write-Output "ALREADY_ACTIVE"; exit 0 }}
 
     # Cau hinh SSID + password
     $cfg = $mgr.GetCurrentAccessPointConfiguration()
     $cfg.Ssid = '{ssid}'
     $cfg.Passphrase = '{password}'
+    Write-Output "DIAG:ConfiguringAP SSID={ssid}"
     Await-WinRT ($mgr.ConfigureAccessPointAsync($cfg)) | Out-Null
 
     # Bat hotspot
+    Write-Output "DIAG:StartingTethering"
     $r = Await-WinRT ($mgr.StartTetheringAsync())
     # TetheringOperationStatus: 0=Success, khac=loi
-    if ($r.Status -eq 0) {{
+    $rStatus = [int]$r.Status
+    if ($rStatus -eq 0) {{
         Write-Output "SUCCESS"
     }} else {{
-        Write-Output "ERROR:TetheringStatus=$($r.Status)"
+        # TetheringOperationStatus: 1=Unknown, 2=NetworkLimitedConnectivity, 3=KilledForPerformance,
+        # 4=RoamingNotAllowed, 5=OperationInProgress, 6=BluetoothDeviceOff, 7=WifiDeviceOff, 8=EntitlementCheckTimeout, 9=EntitlementCheckInternalError
+        $statusNames = @{{0="Success";1="Unknown";2="NetworkLimitedConnectivity";3="KilledForPerformance";4="RoamingNotAllowed";5="OperationInProgress";6="BluetoothOff";7="WifiDeviceOff";8="EntitlementTimeout";9="EntitlementError"}}
+        $statusName = if ($statusNames.ContainsKey($rStatus)) {{ $statusNames[$rStatus] }} else {{ "Unknown($rStatus)" }}
+        Write-Output "ERROR:TetheringFailed:$statusName"
     }}
 }} catch {{
     $errMsg = if ($_.Exception.InnerException) {{ $_.Exception.InnerException.Message }} else {{ $_.Exception.Message }}
