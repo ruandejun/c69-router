@@ -1232,6 +1232,29 @@ async def lifespan(app: FastAPI):
         # Chỉ cần: download binaries, bật IP forwarding, cấu hình firewall — KHÔNG setup NAT.
         logger.info("[Main] Hotspot mode: minimal network setup (skip NAT để không kill Windows ICS).")
         try:
+            # Cleanup: loại bỏ IP conflict — nếu adapter khác (vd: Ethernet 3) đang giữ IP
+            # 192.168.137.1, hotspot adapter sẽ bị tranh chấp → InTransition liên tục.
+            _hs_ip = config.lan_gateway_ip  # 192.168.137.1
+            _hs_lan = config.lan_interface   # "Local Area Connection* 10"
+            _cleanup_ps = (
+                f"$hsIp = '{_hs_ip}'; $hsIface = '{_hs_lan}'; "
+                "Get-NetIPAddress -AddressFamily IPv4 | "
+                "Where-Object { $_.IPAddress -eq $hsIp -and $_.InterfaceAlias -ne $hsIface } | "
+                "ForEach-Object { "
+                "  Write-Host \"[IPCleanup] Removing $hsIp from $($_.InterfaceAlias) (conflict with hotspot)\"; "
+                "  Remove-NetIPAddress -InterfaceAlias $_.InterfaceAlias -IPAddress $hsIp -Confirm:$false -ErrorAction SilentlyContinue "
+                "}"
+            )
+            import subprocess as _sp
+            _cleanup_result = _sp.run(
+                ["powershell", "-NoProfile", "-Command", _cleanup_ps],
+                capture_output=True, text=True, timeout=10
+            )
+            if _cleanup_result.stdout.strip():
+                logger.info(f"[Main] IP conflict cleanup: {_cleanup_result.stdout.strip()}")
+            else:
+                logger.info(f"[Main] IP conflict check: no conflict found (only hotspot adapter has {_hs_ip}).")
+
             from app.network_setup import download_binaries, enable_ip_forwarding, setup_firewall_rules, adjust_lan_interface_metric, ensure_wan_forwarding_disabled
             download_binaries()
             enable_ip_forwarding(lan_interface=config.lan_interface)
