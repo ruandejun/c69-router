@@ -1343,7 +1343,11 @@ async def lifespan(app: FastAPI):
     _singbox_manager.set_crash_callback(_on_singbox_event)
 
     # 6. Start DHCP Server
-    if config.dhcp_enabled:
+    # HOTSPOT MODE: Khi wifi_hotspot_enabled=True, Windows ICS (icssvc/SharedAccess) đã tự
+    # serve DHCP cho subnet 192.168.137.0/24. Chạy DHCP của mình trên 0.0.0.0:67 song song
+    # sẽ conflict → phone không nhận được IP. Skip DHCP, để Windows ICS handle.
+    _is_hotspot_mode = getattr(config, "wifi_hotspot_enabled", False) and platform.system() == "Windows"
+    if config.dhcp_enabled and not _is_hotspot_mode:
         _dhcp_server = DHCPServer(
             server_ip=config.lan_gateway_ip,
             subnet_mask=config.lan_subnet_mask,
@@ -1360,6 +1364,12 @@ async def lifespan(app: FastAPI):
             interface_name=config.lan_interface,
         )
         _dhcp_server.start()
+    elif _is_hotspot_mode:
+        _dhcp_server = None
+        logger.info(
+            "[Main] Hotspot mode: bỏ qua DHCP server nội bộ — "
+            "Windows ICS (icssvc) đảm nhận cấp phát IP 192.168.137.x cho thiết bị kết nối."
+        )
     else:
         _dhcp_server = None
         logger.info("[Main] DHCP Server disabled in config.")
