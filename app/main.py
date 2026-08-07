@@ -18,15 +18,27 @@ import subprocess
 from contextlib import asynccontextmanager
 
 def check_admin_elevation():
-    if platform.system() != "Windows":
+    _sys_platform = platform.system()
+
+    if _sys_platform in ("Linux", "Darwin"):
+        # On Unix: must run as root
+        import os as _os
+        if _os.geteuid() != 0:
+            print("=" * 60)
+            print(" [!] c69-router: Root privileges required (for TUN/NAT/iptables).")
+            print(" [!] Please re-run with: sudo " + " ".join(sys.argv))
+            print("=" * 60)
+            sys.exit(1)
+        return
+
+    if _sys_platform != "Windows":
         return
 
     is_frozen = getattr(sys, 'frozen', False)
-    # Check if running in a normal uvicorn / main app run context or frozen app
     is_app_run = (
         is_frozen or
-        "uvicorn" in sys.argv[0].lower() or 
-        (len(sys.argv) > 1 and "uvicorn" in sys.argv[1].lower()) or 
+        "uvicorn" in sys.argv[0].lower() or
+        (len(sys.argv) > 1 and "uvicorn" in sys.argv[1].lower()) or
         any("main:app" in arg for arg in sys.argv)
     )
     if not is_app_run:
@@ -46,7 +58,6 @@ def check_admin_elevation():
 
         executable = sys.executable
         if is_frozen:
-            # For frozen exe, just run itself with original arguments
             params = " ".join(f'"{a}"' for a in sys.argv[1:])
         else:
             args = sys.argv.copy()
@@ -87,28 +98,12 @@ from app.dhcp_server import DHCPServer
 from app.dependencies import get_config, get_mac_registry, get_singbox_manager
 
 def setup_captive_portproxy(lan_ip: str, port: int = 9000):
-    import subprocess
-    # Xóa cấu hình cũ tránh trùng lặp
-    subprocess.run(
-        ["netsh", "interface", "portproxy", "delete", "v4tov4", "listenport=80", f"listenaddress={lan_ip}"],
-        capture_output=True
-    )
-    # Thêm cấu hình mới
-    subprocess.run(
-        ["netsh", "interface", "portproxy", "add", "v4tov4", 
-         "listenport=80", f"listenaddress={lan_ip}", 
-         f"connectport={port}", "connectaddress=127.0.0.1"],
-        capture_output=True
-    )
-    logger.info(f"[Captive] Windows portproxy forward set up: 80 -> {port} on address {lan_ip}")
+    from app.platform import setup_captive_portproxy as _platform_portproxy
+    _platform_portproxy(lan_ip, port)
 
 def cleanup_captive_portproxy(lan_ip: str):
-    import subprocess
-    subprocess.run(
-        ["netsh", "interface", "portproxy", "delete", "v4tov4", "listenport=80", f"listenaddress={lan_ip}"],
-        capture_output=True
-    )
-    logger.info(f"[Captive] Windows portproxy forward cleaned up for address {lan_ip}")
+    from app.platform import cleanup_captive_portproxy as _platform_cleanup
+    _platform_cleanup(lan_ip)
 
 # ─── Auto-Rotate State (global, queryable từ API) ────────────────────────────
 # Cho phép endpoint /api/proxies/rotation-status đọc countdown và

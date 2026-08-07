@@ -646,10 +646,9 @@ class SingBoxManager:
     # ─── Process Lifecycle ───────────────────────────────
 
     def start(self, _retry=True):
-        """Start sing-box.exe with elevated privileges (TUN mode)."""
-        if platform.system() != "Windows":
-            logger.warning("[SingBox] Non-Windows platform, skipping start.")
-            return
+        """Start sing-box process. Cross-platform: Windows uses elevated PS, Linux/macOS runs directly."""
+        from app.platform import get_singbox_binary_name, download_binaries
+        _IS_WINDOWS = platform.system() == "Windows"
 
         # Dừng instance cũ nhưng KHÔNG khôi phục NAT: ngay bên dưới ta sẽ remove_nat lại
         # để sing-box thấy source IP thật của phone. Khôi phục rồi remove ngay chỉ tổ tốn
@@ -657,26 +656,32 @@ class SingBoxManager:
         # mất mạng và tăng nguy cơ Wintun kẹt vì restart quá lâu.
         self.stop(restore_nat=False)
 
-        # Auto-download if missing
-        wintun_dll = os.path.join(PROJECT_DIR, "wintun.dll")
-        if not os.path.exists(SINGBOX_EXE) or not os.path.exists(wintun_dll):
-            logger.info("[SingBox] Missing sing-box.exe or wintun.dll. Attempting auto-download...")
+        # Auto-download binaries if missing (platform-aware)
+        _binary_name = get_singbox_binary_name()  # 'sing-box.exe' on Win, 'sing-box' on Unix
+        _singbox_bin = os.path.join(PROJECT_DIR, _binary_name)
+        _wintun_dll = os.path.join(PROJECT_DIR, "wintun.dll")
+
+        _needs_download = not os.path.exists(_singbox_bin)
+        if _IS_WINDOWS:
+            _needs_download = _needs_download or not os.path.exists(_wintun_dll)
+
+        if _needs_download:
+            logger.info(f"[SingBox] Missing {_binary_name}. Attempting auto-download...")
             try:
-                from app.network_setup import download_binaries
                 download_binaries()
             except Exception as e:
-                logger.error(f"[SingBox] Auto-download of binaries failed: {e}")
+                logger.error(f"[SingBox] Auto-download failed: {e}")
 
-        # Check again
-        if not os.path.exists(SINGBOX_EXE):
-            self.last_error = "Không tìm thấy sing-box.exe và tải tự động thất bại. Vui lòng kiểm tra kết nối internet."
+        # Check binary again
+        if not os.path.exists(_singbox_bin):
+            self.last_error = f"Không tìm thấy {_binary_name} và tải tự động thất bại."
             logger.error(f"[SingBox] {self.last_error}")
             from app.error_reporter import report_error
             report_error("SingBox", self.last_error, level="critical")
             return
 
-        if not os.path.exists(wintun_dll):
-            self.last_error = "Không tìm thấy wintun.dll và tải tự động thất bại. Vui lòng kiểm tra kết nối internet."
+        if _IS_WINDOWS and not os.path.exists(_wintun_dll):
+            self.last_error = "Không tìm thấy wintun.dll và tải tự động thất bại."
             logger.error(f"[SingBox] {self.last_error}")
             from app.error_reporter import report_error
             report_error("SingBox", self.last_error, level="critical")
