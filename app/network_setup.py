@@ -226,7 +226,14 @@ def setup_firewall_rules():
 # ─── WAN Interface Detection ────────────────────────────
 
 def detect_wan_interface() -> str:
-    """Auto-detect WAN interface (interface with default gateway, lowest metric)."""
+    """Auto-detect WAN interface - uu tien Ethernet (802.3) > WiFi.
+
+    Logic:
+    1. Lay tat ca interfaces co default route (0.0.0.0/0) voi NextHop hop le
+    2. Uu tien: 802.3 Ethernet > NativeWifi > others
+    3. Trong cung loai: chon metric thap nhat
+    4. Fallback: metric thap nhat bat ke loai
+    """
     if platform.system() != "Windows":
         try:
             result = subprocess.run(
@@ -239,60 +246,172 @@ def detect_wan_interface() -> str:
             return "eth0"
 
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-NetRoute -DestinationPrefix '0.0.0.0/0' | "
-             "Where-Object {$_.NextHop -ne '0.0.0.0'} | "
-             "Sort-Object @{Expression={$_.RouteMetric + $_.InterfaceMetric}} | "
-             "Select-Object -First 1 -ExpandProperty InterfaceAlias"],
-            capture_output=True, text=True, timeout=5
+        # Lay tat ca candidates co default route voi NextHop thuc (khong phai 0.0.0.0)
+        ps = (
+            "$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' "
+            "| Where-Object {$_.NextHop -ne '0.0.0.0'} "
+            "| Select-Object InterfaceAlias, "
+            "@{N='TotalMetric';E={$_.RouteMetric + $_.InterfaceMetric}};"
+            "foreach ($r in $routes) {"
+            "  $a = Get-NetAdapter -Name $r.InterfaceAlias -ErrorAction SilentlyContinue;"
+            "  if ($a) {"
+            "    Write-Output \"$($r.InterfaceAlias)|$($a.PhysicalMediaType)|$($r.TotalMetric)\""
+            "  }"
+            "}"
         )
-        iface = result.stdout.strip()
-        if iface:
-            logger.info(f"[Network] Auto-detected WAN interface: {iface}")
-            return iface
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=8
+        )
+        lines = [l.strip() for l in result.stdout.strip().splitlines() if '|' in l]
+
+        if not lines:
+            # No default route found at all
+            logger.warning("[Network] No default route found, falling back to 'Wi-Fi'")
+            return "Wi-Fi"
+
+        ethernet_candidates = []  # 802.3
+        wifi_candidates = []      # NativeWifi / 802.11
+        other_candidates = []     # anything else
+
+        for line in lines:
+            parts = line.split('|')
+            if len(parts) < 3:
+                continue
+            name, media_type, metric_str = parts[0], parts[1], parts[2]
+            try:
+                metric = int(metric_str)
+            except ValueError:
+                metric = 9999
+            media_lower = media_type.lower()
+            if '802.3' in media_lower or 'ethernet' in media_lower:
+                ethernet_candidates.append((metric, name))
+            elif 'wifi' in media_lower or '802.11' in media_lower or 'nativewifi' in media_lower:
+                wifi_candidates.append((metric, name))
+            else:
+                other_candidates.append((metric, name))
+
+        # Chon theo priority: Ethernet > WiFi > other, trong cung loai chon metric thap nhat
+        for candidates in [ethernet_candidates, wifi_candidates, other_candidates]:
+            if candidates:
+                chosen = sorted(candidates)[0][1]  # metric thap nhat
+                logger.info(f"[Network] Auto-detected WAN: '{chosen}' (media={parts[1] if lines else '?'})")
+                return chosen
+
     except Exception as e:
-        logger.warning(f"[Network] Failed to auto-detect WAN: {e}")
+        logger.warning(f"[Network] detect_wan_interface error: {e}")
 
     return "Wi-Fi"
 
 
 def detect_lan_interface(exclude_interface: str = "") -> str:
-    """Auto-detect card mạng CÓ DÂY (Ethernet vật lý) đang cắm để dùng làm LAN bridge
-    tới Aruba AP — loại trừ card đang dùng làm WAN (internet) và các card ảo (Wintun,
-    Hyper-V, VMware, Bluetooth, Loopback...). Không chọn Wi-Fi vì LAN bridge cho phone
-    phải là card có dây riêng, khác hẳn card ra internet.
+    """Auto-detect LAN interface voi 4-tier priority fallback.
 
-    Dùng khi người dùng không tự chọn LAN interface qua UI, hoặc khi config.lan_interface
-    lưu sẵn không còn khớp với máy hiện tại (đổi máy, đổi tên card...).
+    Priority:
+    1. Ethernet (802.3) khac WAN, dang UP, KHONG co default route
+       (co default route = dang lam WAN, khong dung lam LAN)
+    2. Ethernet (802.3) khac WAN, dang UP (du co route, nhung khac WAN duoc chi ro)
+    3. WiFi adapter thu 2 (NativeWifi) khac WAN, dang UP
+       -> se trigger wifi_hotspot_enabled auto
+    4. Fallback cung ten cu / 'Ethernet 3'
+
+    Returns: (interface_name, needs_hotspot)
+             needs_hotspot=True neu chon WiFi adapter (can bat hotspot)
+    Giu API cu -> tra ve str de khong break code hien tai.
+    Dung smart_detect_lan() de lay ca needs_hotspot.
+    """
+    result, _ = smart_detect_lan(exclude_interface=exclude_interface)
+    return result
+
+
+def smart_detect_lan(exclude_interface: str = "") -> tuple:
+    """Smart LAN detection - tra ve (interface_name: str, needs_hotspot: bool).
+
+    needs_hotspot=True co nghia la interface la WiFi card (khong phai Ethernet),
+    caller nen tu dong bat wifi_hotspot_enabled trong config.
+
+    Priority:
+    1. Ethernet khac WAN, UP, khong co default route (pure LAN card)
+    2. Ethernet khac WAN, UP (du co route nhung khac WAN)
+    3. WiFi adapter thu 2 khac WAN, UP -> needs_hotspot=True
+    4. Fallback 'Ethernet 3' / ten cu
     """
     if platform.system() != "Windows":
-        return "eth1"
+        return ("eth1", False)
 
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-NetAdapter | Where-Object { "
-             "$_.Status -eq 'Up' -and "
-             "$_.PhysicalMediaType -eq '802.3' -and "
-             f"$_.Name -ne '{exclude_interface}' -and "
-             "$_.InterfaceDescription -notlike '*Wintun*' -and "
-             "$_.InterfaceDescription -notlike '*Virtual*' -and "
-             "$_.InterfaceDescription -notlike '*Loopback*' -and "
-             "$_.InterfaceDescription -notlike '*Hyper-V*' -and "
-             "$_.InterfaceDescription -notlike '*VMware*' -and "
-             "$_.InterfaceDescription -notlike '*Bluetooth*' "
-             "} | Sort-Object ifIndex | Select-Object -First 1 -ExpandProperty Name"],
-            capture_output=True, text=True, timeout=5
+        # Lay tat ca physical adapters (tru virtual/bluetooth)
+        ps = (
+            "$wan = '" + exclude_interface.replace("'", "''") + "';"
+            "$interfaces_with_route = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' "
+            "| Where-Object {$_.NextHop -ne '0.0.0.0'} "
+            "| Select-Object -ExpandProperty InterfaceAlias);"
+            "Get-NetAdapter | Where-Object {"
+            "  $_.Status -eq 'Up' -and"
+            "  $_.Name -ne $wan -and"
+            "  $_.InterfaceDescription -notlike '*Wintun*' -and"
+            "  $_.InterfaceDescription -notlike '*Hyper-V*' -and"
+            "  $_.InterfaceDescription -notlike '*VMware*' -and"
+            "  $_.InterfaceDescription -notlike '*Loopback*' -and"
+            "  $_.InterfaceDescription -notlike '*Hosted Network*' -and"
+            "  $_.InterfaceDescription -notlike '*Wi-Fi Direct Virtual*' -and"
+            "  $_.InterfaceDescription -notlike '*Bluetooth*'"
+            "} | ForEach-Object {"
+            "  $hasRoute = ($interfaces_with_route -contains $_.Name);"
+            "  Write-Output \"$($_.Name)|$($_.PhysicalMediaType)|$hasRoute\""
+            "}"
         )
-        iface = result.stdout.strip()
-        if iface:
-            logger.info(f"[Network] Auto-detected LAN interface (wired, non-WAN): {iface}")
-            return iface
-    except Exception as e:
-        logger.warning(f"[Network] Failed to auto-detect LAN interface: {e}")
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=8
+        )
+        lines = [l.strip() for l in result.stdout.strip().splitlines() if '|' in l]
 
-    return "Ethernet 3"
+        ethernet_no_route = []   # Tier 1: Ethernet thuan LAN (khong co WAN route)
+        ethernet_any = []        # Tier 2: Ethernet bat ky
+        wifi_adapters = []       # Tier 3: WiFi card thu 2
+
+        for line in lines:
+            parts = line.split('|')
+            if len(parts) < 3:
+                continue
+            name, media_type, has_route_str = parts[0], parts[1], parts[2]
+            has_route = has_route_str.strip().lower() == 'true'
+            media_lower = media_type.lower()
+
+            is_ethernet = '802.3' in media_lower or 'ethernet' in media_lower
+            is_wifi = 'wifi' in media_lower or '802.11' in media_lower or 'nativewifi' in media_lower
+
+            if is_ethernet:
+                if not has_route:
+                    ethernet_no_route.append(name)
+                ethernet_any.append(name)
+            elif is_wifi:
+                wifi_adapters.append(name)
+
+        # Tier 1: Ethernet thuan LAN (uu tien nhat)
+        if ethernet_no_route:
+            chosen = ethernet_no_route[0]
+            logger.info(f"[Network] Smart LAN detect: Ethernet (no-WAN-route) = '{chosen}'")
+            return (chosen, False)
+
+        # Tier 2: Ethernet bat ky (khac WAN)
+        if ethernet_any:
+            chosen = ethernet_any[0]
+            logger.info(f"[Network] Smart LAN detect: Ethernet = '{chosen}'")
+            return (chosen, False)
+
+        # Tier 3: WiFi card thu 2 -> can bat hotspot
+        if wifi_adapters:
+            chosen = wifi_adapters[0]
+            logger.info(f"[Network] Smart LAN detect: WiFi adapter '{chosen}' -> will use as hotspot")
+            return (chosen, True)  # needs_hotspot=True
+
+    except Exception as e:
+        logger.warning(f"[Network] smart_detect_lan error: {e}")
+
+    logger.warning("[Network] No suitable LAN interface found, falling back to 'Ethernet 3'")
+    return ("Ethernet 3", False)
 
 
 def is_lan_interface_valid(interface_name: str, wan_interface: str = "") -> bool:
