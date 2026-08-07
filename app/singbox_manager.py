@@ -717,6 +717,8 @@ class SingBoxManager:
         # Cleanup orphan TUN interface trước khi start để tránh lỗi:
         # "Cannot create a file when that file already exists"
         # Xảy ra khi server cũ bị kill đột ngột, TUN interface không được giải phóng.
+        # Cũng fix: "open interface take too much time to finish" — Wintun driver cần thời gian
+        # để fully release sau khi process cũ chết. Nếu start ngay → timeout → crash → watchdog restart.
         try:
             # Lấy tên tun-interface từ config (mặc định là "tun-in")
             _tun_name = "tun-in"
@@ -736,6 +738,13 @@ class SingBoxManager:
             )
             if _r.returncode == 0:
                 logger.info(f"[SingBox] Cleaned up orphan TUN interface '{_tun_name}' before start.")
+                # Wintun driver cần vài giây để fully release kernel handle sau khi delete.
+                # Không sleep → sing-box mở adapter quá sớm → "open interface take too much time" → crash.
+                time.sleep(2)
+            else:
+                # Adapter không tồn tại → lần đầu chạy. Wintun driver có thể cần load.
+                # Sleep ngắn để tránh race condition với driver initialization.
+                time.sleep(0.5)
         except Exception as _e:
             logger.debug(f"[SingBox] TUN cleanup (pre-start): {_e}")
 
