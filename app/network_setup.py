@@ -1577,25 +1577,22 @@ def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123"):
 
     logger.info(f"[Hotspot] Starting Windows Mobile Hotspot WinRT: SSID='{ssid}'")
 
-    # PS script duoc viet ra file tam de tranh van de escaping
-    # Su dung MakeGenericMethod de tim dung overload AsTask<TResult>
+    # PS script viet ra file tam - tuong thich PS 5.1 (Windows PowerShell mac dinh)
+    # Fix: WinRT type phai tren 1 dong, khong dung ?? (chi co PS 7+)
     ps_content = f"""
 Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
 
-# Load WinRT types
+# Load WinRT types (moi type phai tren 1 dong - PS5.1 yeu cau)
 try {{
-    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,
-        Windows.Networking.NetworkOperators, ContentType=WindowsRuntime]
-    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult,
-        Windows.Networking.NetworkOperators, ContentType=WindowsRuntime]
-    [void][Windows.Networking.Connectivity.NetworkInformation,
-        Windows.Networking.Connectivity, ContentType=WindowsRuntime]
+    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]
+    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]
+    [void][Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]
 }} catch {{
     Write-Output "ERROR:TypeLoad:$($_.Exception.Message)"
     exit 1
 }}
 
-# Tim AsTask<TResult>(IAsyncOperation<TResult>) dung - lay method co 1 generic arg
+# Tim AsTask<TResult>(IAsyncOperation<TResult>) - lay method co 1 generic arg
 $resultType = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]
 $asTaskMethod = $null
 foreach ($m in [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeSystemExtensions].GetMethods()) {{
@@ -1646,7 +1643,9 @@ try {{
         Write-Output "ERROR:Status=$($r.Status)"
     }}
 }} catch {{
-    Write-Output "EXCEPTION:$($_.Exception.InnerException.Message ?? $_.Exception.Message)"
+    # Khong dung ?? (chi co PS7+), dung if/else cho PS5.1
+    $errMsg = if ($_.Exception.InnerException) {{ $_.Exception.InnerException.Message }} else {{ $_.Exception.Message }}
+    Write-Output "EXCEPTION:$errMsg"
 }}
 """
     import tempfile
