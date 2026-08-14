@@ -662,7 +662,7 @@ def download_binaries():
     wintun_dll = os.path.join(PROJECT_DIR, "wintun.dll")
 
     import ssl
-    context = ssl._create_unverified_context()
+    context = ssl.create_default_context()
 
     if not os.path.exists(singbox_exe):
         logger.info("[Network] Downloading sing-box.exe from GitHub...")
@@ -1171,6 +1171,18 @@ def restore_nat_for_singbox(wan_interface: str, lan_subnet: str = "192.168.10.0/
     """
     if platform.system() != "Windows" or not wan_interface:
         return
+
+    # HOTSPOT MODE: Windows ICS (icssvc) lo NAT cho 192.168.137.0/24.
+    # Goi setup_nat() o day se dung icssvc -> KILL HOTSPOT!
+    try:
+        from app.config import load_config
+        cfg = load_config()
+        if getattr(cfg, "wifi_hotspot_enabled", False):
+            logger.info("[Network] Hotspot mode active: skip restoring GenRouterNAT to keep Windows ICS alive.")
+            return
+    except Exception:
+        pass
+
     logger.info("[Network] Restoring GenRouterNAT after sing-box stop...")
     setup_nat(wan_interface=wan_interface, lan_subnet=lan_subnet)
 
@@ -1383,13 +1395,14 @@ foreach ($a in $adapters) {
         return None
 
 
-def setup_hosted_network(ssid: str = "C69-Router", password: str = "matkhau123") -> bool:
+def setup_hosted_network(ssid: str = "C69-Router", password: str = "matkhau123", wan_interface: str = "") -> bool:
     """Tao WiFi hotspot - tu dong chon phuong an tot nhat.
 
     Thu theo thu tu:
     1. netsh wlan hostednetwork (neu driver ho tro)
     2. Windows Mobile Hotspot WinRT (fallback cho Intel AX201/AX210, Win11)
 
+    wan_interface: ten adapter WAN de uu tien profile WiFi thay vi Ethernet.
     Returns: True neu thanh cong.
     """
     if platform.system() != "Windows":
@@ -1407,7 +1420,7 @@ def setup_hosted_network(ssid: str = "C69-Router", password: str = "matkhau123")
         # Fall through to existing netsh logic below
     elif method == "winrt":
         logger.info(f"[Hotspot] Method: Windows Mobile Hotspot WinRT. SSID='{ssid}'")
-        return setup_mobile_hotspot_ps(ssid, password)
+        return setup_mobile_hotspot_ps(ssid, password, wan_interface=wan_interface)
     else:
         logger.warning(f"[Hotspot] No supported method: {hw.get('reason')}")
         return False
@@ -1464,42 +1477,111 @@ def setup_hosted_network(ssid: str = "C69-Router", password: str = "matkhau123")
         return False
 
 
+def resolve_hotspot_topology(
+    configured_lan_interface: str,
+    hotspot_adapter: str | None,
+    hotspot_active: bool,
+) -> dict:
+    """Return a safe LAN topology for the one-Wi-Fi-card Windows hotspot path.
+
+    ICS must own the active Wi-Fi Direct adapter. Falling back to a stale Ethernet
+    adapter after hotspot startup fails makes the router claim it is ready while no
+    phone can reliably enter the proxy path.
+    """
+    if hotspot_active and hotspot_adapter:
+        return {"ready": True, "lan_interface": hotspot_adapter, "reason": ""}
+    return {
+        "ready": False,
+        "lan_interface": None,
+        "reason": "Windows Mobile Hotspot is not active; ICS adapter is unavailable.",
+    }
+
+
 def get_hosted_network_adapter() -> str:
-    """Lấy tên Windows virtual adapter được tạo ra cho Hosted Network.
+    """Lấy đúng virtual adapter đang phục vụ Windows Mobile Hotspot/Hosted Network.
 
-    Sau khi netsh start hostednetwork, Windows tạo 1 virtual adapter thường có tên
-    'Local Area Connection* X' hoặc 'Wi-Fi Direct Virtual Adapter #X'. Hàm này tìm
-    adapter đó để c69-router dùng làm LAN interface.
-
-    Returns:
-        Tên adapter (str) nếu tìm thấy, None nếu không.
+    Windows có thể tồn tại nhiều Wi-Fi Direct adapter. Chỉ chọn adapter đang Up và có
+    IPv4 thuộc subnet ICS 192.168.137.0/24 để tránh gán LAN interface nhầm adapter cũ.
     """
     if platform.system() != "Windows":
         return None
 
     try:
-        # Hosted Network virtual adapter có InterfaceDescription chứa
-        # "Microsoft Hosted Network Virtual Adapter" hoặc "Wi-Fi Direct Virtual Adapter"
-        # Lọc chính xác để không nhầm với adapter khác
+        ps_script = (
+            "Get-NetAdapter | Where-Object { "
+            "$_.Status -eq 'Up' -and ("
+            "$_.InterfaceDescription -like '*Hosted Network Virtual*' -or "
+            "$_.InterfaceDescription -like '*Wi-Fi Direct Virtual*'"
+            ") } | ForEach-Object { "
+            "$ips = @(Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.IPAddress -like '192.168.137.*' } | Select-Object -ExpandProperty IPAddress); "
+            "if ($ips.Count -gt 0) { $_.Name } "
+            "} | Select-Object -First 1"
+        )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-NetAdapter | Where-Object { "
-             "$_.InterfaceDescription -like '*Hosted Network Virtual*' -or "
-             "$_.InterfaceDescription -like '*Wi-Fi Direct Virtual*' "
-             "} | Sort-Object ifIndex | Select-Object -First 1 -ExpandProperty Name"],
+            ["powershell", "-NoProfile", "-Command", ps_script],
             capture_output=True, text=True, timeout=8
         )
         name = result.stdout.strip()
         if name:
-            logger.info(f"[Hotspot] Found hosted network virtual adapter: '{name}'")
+            logger.info(f"[Hotspot] Found active ICS hotspot adapter: '{name}'")
             return name
 
-        logger.warning("[Hotspot] Hosted network virtual adapter not found.")
+        logger.warning("[Hotspot] No active ICS hotspot virtual adapter found.")
         return None
-
     except Exception as e:
         logger.warning(f"[Hotspot] get_hosted_network_adapter error: {e}")
         return None
+
+
+def is_tethering_active() -> bool:
+    """Kiem tra xem Windows Mobile Hotspot co dang o trang thai ON (State=1) khong."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        cmd = [
+            "powershell", "-NoProfile", "-Command",
+            "[void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]; "
+            "[void][Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]; "
+            "$active = $false; "
+            "foreach ($p in [Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles()) { "
+            "  if ($p.GetNetworkConnectivityLevel() -ge 3) { "
+            "    try { "
+            "      $m = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($p); "
+            "      if ([int]$m.TetheringOperationalState -eq 1) { $active = $true; break } "
+            "    } catch {} "
+            "  } "
+            "}; Write-Host $active"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        return "True" in res.stdout
+    except Exception:
+        return False
+
+
+def get_active_tethering_ssid() -> str:
+    """Lay SSID hien tai cua Windows Mobile Hotspot."""
+    if platform.system() != "Windows":
+        return ""
+    try:
+        cmd = [
+            "powershell", "-NoProfile", "-Command",
+            "[void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]; "
+            "[void][Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]; "
+            "foreach ($p in [Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles()) { "
+            "  if ($p.GetNetworkConnectivityLevel() -ge 3) { "
+            "    try { "
+            "      $m = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($p); "
+            "      $ssid = ($m.GetCurrentAccessPointConfiguration()).Ssid; "
+            "      if ($ssid) { Write-Host $ssid; break } "
+            "    } catch {} "
+            "  } "
+            "}"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        return res.stdout.strip()
+    except Exception:
+        return ""
 
 
 def stop_hosted_network():
@@ -1563,19 +1645,38 @@ def check_hosted_network_supported() -> dict:
 
 
 # ── Windows Mobile Hotspot fallback (Intel AX201/AX210, Win11) ────────────────
-def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123"):
+def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123", wan_interface=""):
     """Bat Windows Mobile Hotspot qua PowerShell WinRT API.
 
     Ho tro: Windows 10 1607+ / Windows 11.
     Mot card WiFi co the vua ket noi internet (WAN) vua phat hotspot (AP mode).
     Windows tu tao 'Microsoft Wi-Fi Direct Virtual Adapter' khi bat.
 
+    wan_interface: ten adapter WAN (vi du 'Wi-Fi'). Neu la WiFi, se uu tien
+    profile WiFi thay vi Ethernet de tranh dual-tethering conflict.
+
     Returns: True neu thanh cong.
     """
     if platform.system() != "Windows":
         return False
 
-    logger.info(f"[Hotspot] Starting Windows Mobile Hotspot WinRT: SSID='{ssid}'")
+    # Determine if WAN is WiFi to filter out Ethernet profiles
+    _wan_is_wifi = wan_interface.lower().startswith("wi-fi") or wan_interface.lower() == "wifi"
+    _wan_iface_ps = wan_interface.replace("\\", "\\\\").replace("'", "''")  # escape for PS
+
+    # Ensure SharedAccess Parameters registry keys are set so Windows ICS DHCP server (UDP 67) starts
+    try:
+        reg_ps = (
+            "$p = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters'; "
+            "Set-ItemProperty $p -Name 'ScopeAddress' -Value '192.168.137.1' -Type String -Force -EA SilentlyContinue; "
+            "Set-ItemProperty $p -Name 'StandaloneDhcpAddress' -Value '192.168.137.1' -Type String -Force -EA SilentlyContinue; "
+            "Set-ItemProperty $p -Name 'EnableDHCP' -Value 1 -Type DWord -Force -EA SilentlyContinue; "
+            "Set-ItemProperty $p -Name 'DhcpDomain' -Value 'mshome.net' -Type String -Force -EA SilentlyContinue"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", reg_ps], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    logger.info(f"[Hotspot] Starting Windows Mobile Hotspot WinRT: SSID='{ssid}' wan={wan_interface}")
 
     # PS script WinRT hotspot - PS5.1 compatible
     # IAsyncOperation.Status polling: 0=Running, 1=Completed, 2=Canceled, 3=Error
@@ -1614,10 +1715,46 @@ function Await-WinRT($op, $timeoutSec = 30) {{
 }}
 
 try {{
-    $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+    # STEP 0: Neu wan_interface la WiFi, uu tien profile WiFi thay vi Ethernet.
+    # GetInternetConnectionProfile() co the tra ve Ethernet neu ca hai deu co internet.
+    $wanIsWifi = $false; $wanIface = '{_wan_iface_ps}'
+    if ($wanIface -match 'Wi-Fi|WiFi|wifi') {{ $wanIsWifi = $true }}
+    $profile = $null
+    if ($wanIsWifi) {{
+        # Tim profile WiFi (khong phai Ethernet) voi connectivity >= InternetAccess (3)
+        foreach ($p in [Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles()) {{
+            $lvl = [int]$p.GetNetworkConnectivityLevel()
+            $pName = $p.ProfileName
+            if ($lvl -ge 3 -and $pName -notmatch 'Ethernet') {{
+                $profile = $p
+                Write-Output "DIAG:SelectedWiFiProfile=$pName"
+                break
+            }}
+        }}
+    }}
+    if ($null -eq $profile) {{
+        $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+    }}
     if ($null -eq $profile) {{ Write-Output "ERROR:NoInternetProfile"; exit 1 }}
 
     Write-Output "DIAG:Profile=$($profile.ProfileName)"
+
+    # STEP 1: Dung tethering tren TAT CA profile khac truoc khi bat tren target profile.
+    # Tranh dual-tethering conflict (Ethernet + WiFi deu State=1 -> InTransition).
+    $targetName = $profile.ProfileName
+    foreach ($p2 in [Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles()) {{
+        if ([int]$p2.GetNetworkConnectivityLevel() -lt 3) {{ continue }}
+        if ($p2.ProfileName -eq $targetName) {{ continue }}
+        try {{
+            $m2 = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($p2)
+            $st2 = [int]$m2.TetheringOperationalState
+            if ($st2 -eq 1) {{
+                Write-Output "DIAG:StopConflict=$($p2.ProfileName) State=$st2"
+                try {{ Await-WinRT($m2.StopTetheringAsync()) | Out-Null; Write-Output "DIAG:StopConflict OK" }} catch {{}}
+            }}
+        }} catch {{}}
+    }}
+    Start-Sleep -Milliseconds 1000
 
     $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
     if ($null -eq $mgr) {{ Write-Output "ERROR:NoTetheringManager"; exit 1 }}
@@ -1625,11 +1762,11 @@ try {{
     # Pre-check TetheringCapability truoc khi bat
     # 0=Enabled, 1=DisabledByGroupPolicy, 2=DisabledByHardwareLimitation
     # 3=DisabledByOperator, 4=DisabledBySku, 5=DisabledByRequirementsNotMet, 6=DisabledBySystemCapability
-    $cap = $mgr.TetheringCapability
-    Write-Output "DIAG:TetheringCapability=$cap"
-    if ($cap -ne 0) {{
+    $capInt = [int]$mgr.TetheringCapability
+    Write-Output "DIAG:TetheringCapability=$capInt"
+    if ($capInt -ne 0) {{
         $capNames = @{{0="Enabled";1="DisabledByGroupPolicy";2="DisabledByHardwareLimitation";3="DisabledByOperator";4="DisabledBySku";5="DisabledByRequirementsNotMet";6="DisabledBySystemCapability"}}
-        $capName = if ($capNames.ContainsKey([int]$cap)) {{ $capNames[[int]$cap] }} else {{ "Unknown($cap)" }}
+        $capName = if ($capNames.ContainsKey($capInt)) {{ $capNames[$capInt] }} else {{ "Unknown($capInt)" }}
         Write-Output "ERROR:CapabilityBlocked:$capName"
         exit 1
     }}
@@ -1637,38 +1774,45 @@ try {{
     # Trang thai hien tai: 0=Off, 1=On, 2=InTransition
     $state = [int]$mgr.TetheringOperationalState
     Write-Output "DIAG:OperationalState=$state"
-    if ($state -eq 1) {{ Write-Output "ALREADY_ACTIVE"; exit 0 }}
+    if ($state -eq 1) {{
+        # Kiem tra SSID hien tai dung chua - neu sai thi stop va reconfigure
+        $currentSsid = ($mgr.GetCurrentAccessPointConfiguration()).Ssid
+        if ($currentSsid -eq '{ssid}') {{ Write-Output "ALREADY_ACTIVE"; exit 0 }}
+        Write-Output "DIAG:SSID mismatch ($currentSsid != {ssid}) - stopping old tethering to reconfigure"
+        try {{ Await-WinRT ($mgr.StopTetheringAsync()) | Out-Null }} catch {{}}
+        Start-Sleep -Milliseconds 1000
+        $state = [int]$mgr.TetheringOperationalState
+    }}
 
     # Xu ly InTransition stuck (Windows bug: icssvc bi treo -> tat ca WinRT op fail Status=3)
-    # Fix: restart icssvc service, doi 2s, lay lai manager tu profile moi
+    # Fix: stop/start icssvc service, doi 4s cho service san sang, lay lai manager tu profile
     if ($state -eq 2) {{
-        Write-Output "DIAG:InTransition detected - waiting 5s..."
-        $waitDeadline = [System.DateTime]::Now.AddSeconds(5)
+        Write-Output "DIAG:InTransition detected - waiting 4s..."
+        $waitDeadline = [System.DateTime]::Now.AddSeconds(4)
         while ([int]$mgr.TetheringOperationalState -eq 2 -and [System.DateTime]::Now -lt $waitDeadline) {{
             [System.Threading.Thread]::Sleep(500)
         }}
         $state = [int]$mgr.TetheringOperationalState
         if ($state -eq 2) {{
             Write-Output "DIAG:Still InTransition - restarting icssvc..."
-            Restart-Service -Name icssvc -Force -ErrorAction SilentlyContinue
+            Stop-Service -Name icssvc -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
-            # Lay lai manager sau khi restart service
-            $profile2 = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
-            if ($null -ne $profile2) {{
-                $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile2)
-            }}
+            Start-Service -Name icssvc -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+            $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
             $state = [int]$mgr.TetheringOperationalState
             Write-Output "DIAG:State after icssvc restart: $state"
         }}
         if ($state -eq 1) {{ Write-Output "ALREADY_ACTIVE"; exit 0 }}
     }}
 
-    # Cau hinh SSID + password
+    # Always ensure fresh manager handle before configuring
+    $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
     $cfg = $mgr.GetCurrentAccessPointConfiguration()
     $cfg.Ssid = '{ssid}'
     $cfg.Passphrase = '{password}'
     Write-Output "DIAG:ConfiguringAP SSID={ssid}"
-    Await-WinRT ($mgr.ConfigureAccessPointAsync($cfg)) | Out-Null
+    try {{ Await-WinRT ($mgr.ConfigureAccessPointAsync($cfg)) | Out-Null }} catch {{ Write-Output "DIAG:ConfigureAP warning: $_" }}
 
     # Bat hotspot
     Write-Output "DIAG:StartingTethering"

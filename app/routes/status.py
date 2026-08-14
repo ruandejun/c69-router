@@ -244,8 +244,23 @@ def get_system_health(
     """
     from app.network_setup import check_lan_interface_health
 
-    # LAN health
-    lan_health = check_lan_interface_health(config.lan_interface)
+    if getattr(config, "wifi_hotspot_enabled", False):
+        from app.network_setup import get_hosted_network_adapter, is_tethering_active, resolve_hotspot_topology
+        topology = resolve_hotspot_topology(
+            config.lan_interface,
+            get_hosted_network_adapter(),
+            is_tethering_active(),
+        )
+        lan_health = {
+            "status": "healthy" if topology["ready"] else "degraded",
+            "connection_state": "Up" if topology["ready"] else "Unavailable",
+            "ip_address": config.lan_gateway_ip if topology["ready"] else None,
+            "interface_name": topology["lan_interface"],
+            "message": "ICS Mobile Hotspot is active" if topology["ready"] else topology["reason"],
+            "suggestions": [] if topology["ready"] else ["Open Windows Mobile Hotspot, then restart C69 Router."],
+        }
+    else:
+        lan_health = check_lan_interface_health(config.lan_interface)
 
     # WAN health (check default gateway reachability)
     wan_status = "unknown"

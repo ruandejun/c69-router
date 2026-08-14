@@ -3,7 +3,7 @@ GenRouter v2.0 — Settings Routes
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import List
 import logging
 
@@ -34,12 +34,21 @@ class SettingsUpdatePayload(BaseModel):
     bypass_cidrs: List[str] = []
     wifi_hotspot_enabled: bool = False
     wifi_hotspot_ssid: str = "C69-Router"
-    wifi_hotspot_password: str = "c69router123"
+    wifi_hotspot_password: str | None = Field(default=None, min_length=8, max_length=63)
+
+    @field_validator("wifi_hotspot_ssid")
+    @classmethod
+    def validate_hotspot_ssid(cls, value: str) -> str:
+        value = value.strip()
+        if not 1 <= len(value) <= 32:
+            raise ValueError("WiFi hotspot SSID must be 1-32 characters")
+        return value
 
 
 @router.get("")
 def get_settings(config=Depends(get_config)):
-    return config.model_dump()
+    """Return non-secret settings for the management UI."""
+    return config.model_dump(exclude={"wifi_hotspot_password"})
 
 
 @router.post("/update")
@@ -67,7 +76,8 @@ def update_settings(
     config.bypass_cidrs = payload.bypass_cidrs
     config.wifi_hotspot_enabled = payload.wifi_hotspot_enabled
     config.wifi_hotspot_ssid = payload.wifi_hotspot_ssid
-    config.wifi_hotspot_password = payload.wifi_hotspot_password
+    if payload.wifi_hotspot_password is not None:
+        config.wifi_hotspot_password = payload.wifi_hotspot_password
 
     save_config(config)
 

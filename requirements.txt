@@ -1,5 +1,17 @@
-fastapi
-uvicorn[standard]
-pydantic
-PySocks
-websockets
+# Runtime dependencies (pin exact versions after a validated release build)
+fastapi==0.133.1
+uvicorn[standard]==0.41.0
+pydantic==2.13.4
+PySocks==1.7.1
+websockets==15.0.1
+requests==2.33.0
+psutil==7.2.2
+packaging==26.0
+
+# Build/release dependencies
+boto3==1.42.89
+paramiko==5.0.0
+python-dotenv==1.2.2
+
+# Development/test dependencies
+pytest==9.1.1

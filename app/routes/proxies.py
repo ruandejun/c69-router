@@ -17,6 +17,11 @@ from app.dependencies import get_config, get_mac_registry, get_singbox_manager
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/proxies")
 
+
+def _public_proxy(proxy: ProxyConfig) -> dict:
+    """Serialize proxy metadata for management UI without credentials."""
+    return proxy.model_dump(exclude={"username", "password"})
+
 # ─── Background check-all state ────────────────────────────────
 _check_job: dict = {"running": False, "started_at": 0, "results": None, "error": None}
 
@@ -72,7 +77,7 @@ def list_proxies(config=Depends(get_config)):
 
     proxies = []
     for p in config.proxies:
-        pd = p.model_dump()
+        pd = _public_proxy(p)
         pd["device_count"] = 0  # sẽ được tính nếu có registry
         proxies.append(pd)
 
@@ -94,7 +99,7 @@ def list_proxies_with_device_count(
 
     proxies = []
     for p in config.proxies:
-        pd = p.model_dump()
+        pd = _public_proxy(p)
         pd["device_count"] = device_counts.get(p.id, 0)
         proxies.append(pd)
 

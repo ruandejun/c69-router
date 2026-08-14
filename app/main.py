@@ -15,6 +15,8 @@ import logging
 import asyncio
 import platform
 import subprocess
+import secrets
+import html
 from contextlib import asynccontextmanager
 
 def check_admin_elevation():
@@ -126,8 +128,9 @@ def check_admin_elevation():
 
 check_admin_elevation()
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response, Depends, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import (
@@ -166,11 +169,15 @@ def perform_auto_rotation(config, mac_registry, singbox_manager):
     """
     import time as _time
     if not mac_registry or not config.proxies or len(config.proxies) < 2:
+        _rotate_state["last_rotate_time"] = _time.time()
+        _rotate_state["last_rotate_count"] = 0
         return 0
         
     all_devices = mac_registry.get_all_devices()
     proxy_devices = [d for d in all_devices if d.proxy_id]
     if not proxy_devices:
+        _rotate_state["last_rotate_time"] = _time.time()
+        _rotate_state["last_rotate_count"] = 0
         return 0
         
     import random
@@ -1154,7 +1161,7 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     config.wifi_hotspot_ssid = "C69-Router"
             if not getattr(config, "wifi_hotspot_password", None) or config.wifi_hotspot_password in ("c69router123", ""):
-                config.wifi_hotspot_password = "matkhau123"
+                config.wifi_hotspot_password = secrets.token_urlsafe(12)[:16]
 
         save_config(config)
     else:
@@ -1166,12 +1173,27 @@ async def lifespan(app: FastAPI):
     # sau đó cập nhật lan_interface sang virtual adapter được Windows tạo ra.
     # Flow: c69-router chạy → hotspot bật → phone kết nối WiFi → DHCP → proxy routing.
     _hotspot_was_started = False
+    _hotspot_topology_ready = not getattr(config, "wifi_hotspot_enabled", False)
     if platform.system() == "Windows" and getattr(config, "wifi_hotspot_enabled", False):
         from app.network_setup import (
             setup_hosted_network, get_hosted_network_adapter,
-            check_hosted_network_supported
+            check_hosted_network_supported, is_tethering_active,
+            get_active_tethering_ssid, resolve_hotspot_topology
         )
         logger.info("[Main] WiFi Hotspot mode enabled — setting up hosted network...")
+
+        # Migration: Auto-update old generic SSID ("C69-Router", "c69-router", "") sang 'c69-router-<hostname>'
+        curr_ssid = getattr(config, "wifi_hotspot_ssid", "") or ""
+        if not curr_ssid or curr_ssid.lower() in ("c69-router", "c69-router-"):
+            try:
+                from app.config import _generate_hotspot_ssid
+                config.wifi_hotspot_ssid = _generate_hotspot_ssid()
+                if not getattr(config, "wifi_hotspot_password", None) or config.wifi_hotspot_password in ("c69router123", "matkhau123"):
+                    config.wifi_hotspot_password = secrets.token_urlsafe(12)[:16]
+                save_config(config)
+                logger.info(f"[Main] Auto-migrated hotspot SSID to '{config.wifi_hotspot_ssid}'")
+            except Exception as _ex:
+                logger.warning(f"[Main] Failed to generate unique SSID: {_ex}")
 
         # Kiểm tra driver hỗ trợ trước
         hw_check = check_hosted_network_supported()
@@ -1181,36 +1203,71 @@ async def lifespan(app: FastAPI):
                 f"Bỏ qua hotspot, dùng lan_interface từ config."
             )
         else:
-            ssid = getattr(config, "wifi_hotspot_ssid", "C69-Router") or "C69-Router"
-            pwd  = getattr(config, "wifi_hotspot_password", "c69router123") or "c69router123"
-            ok = setup_hosted_network(ssid=ssid, password=pwd)
-            if ok:
-                _hotspot_was_started = True
-                # Chờ tối đa 5s để Windows tạo virtual adapter
-                hotspot_adapter = None
-                for _attempt in range(10):
-                    hotspot_adapter = get_hosted_network_adapter()
-                    if hotspot_adapter:
-                        break
-                    time.sleep(0.5)
-
-                if hotspot_adapter:
-                    logger.info(
-                        f"[Main] ✓ Hotspot '{ssid}' active. "
-                        f"Virtual adapter: '{hotspot_adapter}' → dùng làm LAN interface."
-                    )
-                    config.lan_interface = hotspot_adapter
-                    save_config(config)
+            # Uu tien: kiem tra neu hotspot adapter da UP VA tethering dang active VOI DUNG SSID
+            existing_adapter = get_hosted_network_adapter()
+            active_ssid_matches = False
+            if existing_adapter and is_tethering_active():
+                active_ssid = get_active_tethering_ssid()
+                if active_ssid and active_ssid == config.wifi_hotspot_ssid:
+                    active_ssid_matches = True
                 else:
-                    logger.warning(
-                        "[Main] ⚠ Không tìm được virtual adapter sau khi hotspot start. "
-                        "Tiếp tục với lan_interface từ config."
-                    )
-            else:
-                logger.warning(
-                    "[Main] ⚠ Không thể khởi động hotspot. "
-                    "Tiếp tục với lan_interface từ config."
+                    logger.info(f"[Main] Hotspot active với SSID '{active_ssid}' khác config '{config.wifi_hotspot_ssid}' — sẽ reconfigure.")
+
+            if existing_adapter and active_ssid_matches:
+                logger.info(
+                    f"[Main] ✓ Hotspot adapter '{existing_adapter}' đang ACTIVE (SSID='{config.wifi_hotspot_ssid}') — skip setup_hosted_network. "
+                    f"Dùng trực tiếp làm LAN interface."
                 )
+                config.lan_interface = existing_adapter
+                save_config(config)
+                _hotspot_was_started = False  # App khong start hotspot, khong stop khi shutdown
+            else:
+                # Hotspot chua chay hoac SSID khac, can setup fresh
+                ssid = getattr(config, "wifi_hotspot_ssid", "") or "c69-router"
+                pwd  = getattr(config, "wifi_hotspot_password", "c69router123") or "c69router123"
+                ok = setup_hosted_network(ssid=ssid, password=pwd, wan_interface=config.wan_interface)
+                if ok:
+                    _hotspot_was_started = True
+                    # Wi-Fi Direct adapter may appear before ICS assigns its IP. Poll both
+                    # adapter state and 192.168.137.x address before declaring topology ready.
+                    hotspot_adapter = None
+                    for _attempt in range(20):
+                        hotspot_adapter = get_hosted_network_adapter()
+                        if hotspot_adapter:
+                            break
+                        time.sleep(0.5)
+
+                    if hotspot_adapter:
+                        logger.info(
+                            f"[Main] ✓ Hotspot '{ssid}' active. "
+                            f"Virtual adapter: '{hotspot_adapter}' → dùng làm LAN interface."
+                        )
+                        config.lan_interface = hotspot_adapter
+                        save_config(config)
+                    else:
+                        logger.warning(
+                            "[Main] ⚠ Không tìm được virtual adapter sau khi hotspot start. "
+                            "Hotspot topology will remain degraded."
+                        )
+        # Re-check the final state after either reuse or startup. Do not continue
+        # with Ethernet 3/stale config when one-card hotspot creation failed.
+        final_adapter = get_hosted_network_adapter()
+        topology = resolve_hotspot_topology(
+            config.lan_interface,
+            final_adapter,
+            is_tethering_active(),
+        )
+        _hotspot_topology_ready = topology["ready"]
+        if topology["ready"]:
+            if config.lan_interface != topology["lan_interface"]:
+                config.lan_interface = topology["lan_interface"]
+                save_config(config)
+            logger.info(f"[Main] ✓ Hotspot topology ready on '{config.lan_interface}'.")
+        else:
+            logger.error(
+                f"[Main] 🔴 Hotspot topology is NOT ready: {topology['reason']} "
+                "— skipping LAN/DNS/captive setup instead of using a stale wired adapter."
+            )
 
     # 4. Setup network (LAN static IP, IP forwarding, firewall, binaries)
 
@@ -1224,14 +1281,35 @@ async def lifespan(app: FastAPI):
     # adapter chua tao ra), KHONG goi setup_network voi LAN=WAN vi ensure_lan_ip_assigned
     # se xoa IP DHCP cua WiFi WAN card va gan IP tinh 192.168.10.1 -> mat internet.
     # Chi setup NAT va firewall, bo qua phan IP/forwarding cua LAN.
-    _is_hotspot_mode = getattr(config, "wifi_hotspot_enabled", False) and platform.system() == "Windows"
+    _is_hotspot_mode = (
+        getattr(config, "wifi_hotspot_enabled", False)
+        and platform.system() == "Windows"
+        and _hotspot_topology_ready
+    )
 
-    if _is_hotspot_mode:
+    if getattr(config, "wifi_hotspot_enabled", False) and not _hotspot_topology_ready:
+        logger.error(
+            "[Main] Hotspot requested but ICS topology is unavailable. Router enters degraded mode; "
+            "no custom NAT, DHCP, sing-box, or captive portproxy will be started."
+        )
+    elif _is_hotspot_mode:
         # HOTSPOT MODE: Windows ICS (icssvc/SharedAccess) đã lo NAT + DHCP cho subnet 192.168.137.0/24.
-        # Gọi setup_nat() sẽ trigger _ensure_nat_prereqs() → stop ICS → hotspot chết (InTransition).
         # Chỉ cần: download binaries, bật IP forwarding, cấu hình firewall — KHÔNG setup NAT.
         logger.info("[Main] Hotspot mode: minimal network setup (skip NAT để không kill Windows ICS).")
         try:
+            import subprocess as _sp
+            # Tự động phát hiện IP LAN thực tế trên card ảo Hotspot
+            _detect_lan_ps = (
+                f"Get-NetIPAddress -InterfaceAlias '{config.lan_interface}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.IPAddress -like '192.168.137.*' } | "
+                "Select-Object -ExpandProperty IPAddress -First 1"
+            )
+            _sp_res = _sp.run(["powershell", "-NoProfile", "-Command", _detect_lan_ps], capture_output=True, text=True, timeout=5)
+            _found_ip = _sp_res.stdout.strip()
+            if _found_ip and _found_ip != config.lan_gateway_ip:
+                config.lan_gateway_ip = _found_ip
+                save_config(config)
+                logger.info(f"[Main] Hotspot LAN Gateway IP dynamically detected: {_found_ip}")
             # Cleanup: loại bỏ IP conflict — nếu adapter khác (vd: Ethernet 3) đang giữ IP
             # 192.168.137.1, hotspot adapter sẽ bị tranh chấp → InTransition liên tục.
             _hs_ip = config.lan_gateway_ip  # 192.168.137.1
@@ -1239,7 +1317,7 @@ async def lifespan(app: FastAPI):
             _cleanup_ps = (
                 f"$hsIp = '{_hs_ip}'; $hsIface = '{_hs_lan}'; "
                 "Get-NetIPAddress -AddressFamily IPv4 | "
-                "Where-Object { $_.IPAddress -eq $hsIp -and $_.InterfaceAlias -ne $hsIface } | "
+                "Where-Object { $_.IPAddress -eq $hsIp -and $_.InterfaceAlias -ne $hsIface -and $_.InterfaceAlias -notlike 'Local Area Connection*' -and $_.InterfaceAlias -notlike '*Wi-Fi Direct*' } | "
                 "ForEach-Object { "
                 "  Write-Host \"[IPCleanup] Removing $hsIp from $($_.InterfaceAlias) (conflict with hotspot)\"; "
                 "  Remove-NetIPAddress -InterfaceAlias $_.InterfaceAlias -IPAddress $hsIp -Confirm:$false -ErrorAction SilentlyContinue "
@@ -1307,89 +1385,97 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[Main] TCP optimization non-critical error: {e}")
     threading.Thread(target=_run_tcp_optimize, daemon=True, name="tcp-optimizer").start()
 
-    # 4.1 LAN Interface Health Check — detect disconnected Aruba cable early
-    from app.network_setup import check_lan_interface_health
-    lan_health = check_lan_interface_health(config.lan_interface)
-    if lan_health["status"] != "healthy":
-        logger.warning("=" * 60)
-        logger.warning(f"  🔴 LAN INTERFACE PROBLEM DETECTED")
-        logger.warning(f"  {lan_health['message']}")
-        if lan_health.get("suggestions"):
-            for suggestion in lan_health["suggestions"]:
-                logger.warning(f"  → {suggestion}")
-        logger.warning("=" * 60)
-    else:
-        logger.info(f"[Main] ✓ LAN Health: {lan_health['message']}")
+    if not _is_hotspot_mode:
+        # 4.1 LAN Interface Health Check — detect disconnected Aruba cable early
+        from app.network_setup import check_lan_interface_health
+        lan_health = check_lan_interface_health(config.lan_interface)
+        if lan_health["status"] != "healthy":
+            logger.warning("=" * 60)
+            logger.warning(f"  🔴 LAN INTERFACE PROBLEM DETECTED")
+            logger.warning(f"  {lan_health['message']}")
+            if lan_health.get("suggestions"):
+                for suggestion in lan_health["suggestions"]:
+                    logger.warning(f"  → {suggestion}")
+            logger.warning("=" * 60)
+        else:
+            logger.info(f"[Main] ✓ LAN Health: {lan_health['message']}")
 
-    # 4.2 Verify NAT rule is active
-    nat_status = verify_nat()
-    if nat_status.get("ok"):
-        logger.info(f"[Main] ✓ NAT active: {[r.get('InternalIPInterfaceAddressPrefix') for r in nat_status['rules']]}")
-    else:
-        logger.warning(
-            "[Main] ⚠ NAT rule not found! "
-            "Phông kết nối Aruba sẽ không có internet. "
-            "Chạy lại với quyền Administrator."
-        )
-        from app.error_reporter import report_error
-        report_error("NAT", "NAT rule not found after startup", level="warning")
+        # 4.2 Verify NAT rule is active
+        nat_status = verify_nat()
+        if nat_status.get("ok"):
+            logger.info(f"[Main] ✓ NAT active: {[r.get('InternalIPInterfaceAddressPrefix') for r in nat_status['rules']]}")
+        else:
+            logger.warning(
+                "[Main] ⚠ NAT rule not found! "
+                "Phông kết nối Aruba sẽ không có internet. "
+                "Chạy lại với quyền Administrator."
+            )
+            from app.error_reporter import report_error
+            report_error("NAT", "NAT rule not found after startup", level="warning")
 
-    # 4.5 Verify và enforce LAN interface IP từ config
-    # CONFIG là source of truth — nếu interface IP khác config, ENFORCE config lên interface
-    # (không phải ngược lại như trước đây)
-    from app.network_setup import get_lan_ip, ensure_lan_ip_assigned
-    actual_lan_ip = get_lan_ip(config.lan_interface)
-    if actual_lan_ip != config.lan_gateway_ip:
-        logger.warning(
-            f"[Main] LAN interface '{config.lan_interface}' co IP {actual_lan_ip} "
-            f"khac config {config.lan_gateway_ip}. Dang enforce config IP len interface..."
-        )
-        try:
-            ensure_lan_ip_assigned(config.lan_interface, config.lan_gateway_ip, config.lan_subnet_mask)
-            # Verify lại sau khi enforce
-            actual_lan_ip = get_lan_ip(config.lan_interface)
-            if actual_lan_ip == config.lan_gateway_ip:
-                logger.info(f"[Main] Enforce IP thanh cong: {config.lan_interface} = {config.lan_gateway_ip}")
-            else:
-                logger.warning(
-                    f"[Main] Enforce IP that bai (can quyen Admin). "
-                    f"Interface van la {actual_lan_ip}, tiep tuc voi config IP {config.lan_gateway_ip}."
-                )
-        except Exception as _e:
-            logger.warning(f"[Main] Enforce IP error: {_e}. Tiep tuc voi config IP.")
+        # 4.5 Verify và enforce LAN interface IP từ config
+        from app.network_setup import get_lan_ip, ensure_lan_ip_assigned
+        actual_lan_ip = get_lan_ip(config.lan_interface)
+        if actual_lan_ip != config.lan_gateway_ip:
+            logger.warning(
+                f"[Main] LAN interface '{config.lan_interface}' co IP {actual_lan_ip} "
+                f"khac config {config.lan_gateway_ip}. Dang enforce config IP len interface..."
+            )
+            try:
+                ensure_lan_ip_assigned(config.lan_interface, config.lan_gateway_ip, config.lan_subnet_mask)
+                actual_lan_ip = get_lan_ip(config.lan_interface)
+                if actual_lan_ip == config.lan_gateway_ip:
+                    logger.info(f"[Main] Enforce IP thanh cong: {config.lan_interface} = {config.lan_gateway_ip}")
+                else:
+                    logger.warning(
+                        f"[Main] Enforce IP that bai (can quyen Admin). "
+                        f"Interface van la {actual_lan_ip}, tiep tuc voi config IP {config.lan_gateway_ip}."
+                    )
+            except Exception as _e:
+                logger.warning(f"[Main] Enforce IP error: {_e}. Tiep tuc voi config IP.")
 
 
     logger.info(f"[Main] LAN Gateway IP: {config.lan_gateway_ip}")
     logger.info(f"[Main] DHCP Pool: {config.dhcp_range_start} → {config.dhcp_range_end}")
 
     # 5. Initialize Sing-Box Manager
-    _singbox_manager = SingBoxManager(config, _mac_registry)
-    _singbox_manager.start_watchdog()
+    _singbox_manager = None
+    if not (getattr(config, "wifi_hotspot_enabled", False) and not _hotspot_topology_ready):
+        _singbox_manager = SingBoxManager(config, _mac_registry)
+        _singbox_manager.start_watchdog()
 
-    # Đăng ký callback để broadcast WebSocket alert khi sing-box crash/recover.
-    # Dashboard nhận event này và hiển thị toast/banner cảnh báo ngay lập tức,
-    # giúp xác định xem mất mạng có phải do sing-box crash không.
-    def _on_singbox_event(event: str, detail: str):
-        import time
-        _broadcast_ws({
-            "type": event,           # singbox_crash | singbox_recovered | singbox_restart_failed
-            "detail": detail,
-            "timestamp": time.time(),
-        })
-        if event == "singbox_crash":
-            logger.warning(f"[Main] 🔴 sing-box CRASHED — broadcast WS alert: {detail}")
-        elif event == "singbox_recovered":
-            logger.info(f"[Main] 🟢 sing-box RECOVERED — broadcast WS alert.")
-        elif event == "singbox_restart_failed":
-            logger.error(f"[Main] ❌ sing-box restart FAILED — broadcast WS alert: {detail}")
-    _singbox_manager.set_crash_callback(_on_singbox_event)
+    if _singbox_manager:
+        # Đăng ký callback để broadcast WebSocket alert khi sing-box crash/recover.
+        # Dashboard nhận event này và hiển thị toast/banner cảnh báo ngay lập tức,
+        # giúp xác định xem mất mạng có phải do sing-box crash không.
+        def _on_singbox_event(event: str, detail: str):
+            import time
+            _broadcast_ws({
+                "type": event,
+                "detail": detail,
+                "timestamp": time.time(),
+            })
+            if event == "singbox_crash":
+                logger.warning(f"[Main] 🔴 sing-box CRASHED — broadcast WS alert: {detail}")
+            elif event == "singbox_recovered":
+                logger.info("[Main] 🟢 sing-box RECOVERED — broadcast WS alert.")
+            elif event == "singbox_restart_failed":
+                logger.error(f"[Main] ❌ sing-box restart FAILED — broadcast WS alert: {detail}")
+
+        _singbox_manager.set_crash_callback(_on_singbox_event)
 
     # 6. Start DHCP Server
     # HOTSPOT MODE: Khi wifi_hotspot_enabled=True, Windows ICS (icssvc/SharedAccess) đã tự
     # serve DHCP cho subnet 192.168.137.0/24. Chạy DHCP của mình trên 0.0.0.0:67 song song
     # sẽ conflict → phone không nhận được IP. Skip DHCP, để Windows ICS handle.
-    _is_hotspot_mode = getattr(config, "wifi_hotspot_enabled", False) and platform.system() == "Windows"
-    if config.dhcp_enabled and not _is_hotspot_mode:
+    _is_hotspot_mode = (
+        getattr(config, "wifi_hotspot_enabled", False)
+        and platform.system() == "Windows"
+        and _hotspot_topology_ready
+    )
+    if config.dhcp_enabled and not _is_hotspot_mode and not (
+        getattr(config, "wifi_hotspot_enabled", False) and not _hotspot_topology_ready
+    ):
         _dhcp_server = DHCPServer(
             server_ip=config.lan_gateway_ip,
             subnet_mask=config.lan_subnet_mask,
@@ -1422,7 +1508,7 @@ async def lifespan(app: FastAPI):
     # trong khoảng này NAT đã bị remove_nat_for_singbox() gỡ mà TUN chưa lên → thiết bị
     # đi thẳng ra internet với IP thật (lộ IP gốc). Fix: gọi reload_now() blocking trực
     # tiếp (không qua debounce), sau đó poll is_running tối đa 30s trước khi yield.
-    if platform.system() == "Windows":
+    if platform.system() == "Windows" and _singbox_manager:
         try:
             logger.info("[Main] Starting sing-box (synchronous, waiting for TUN to be ready)...")
             _singbox_manager.reload_now()
@@ -1456,7 +1542,7 @@ async def lifespan(app: FastAPI):
     # vì 1.1.1.1 bị route_exclude_address loại khỏi TUN (singbox_manager.py) để tránh
     # sing-box tự loop — nếu phone dùng thẳng 1.1.1.1 thì DNS/DoT/DoH sẽ thoát TUN,
     # đi thẳng ra WAN thật thay vì được hijack-dns xử lý.
-    if platform.system() == "Windows":
+    if platform.system() == "Windows" and _singbox_manager:
         try:
             setup_interface_dns(
                 lan_interface=config.lan_interface,
@@ -1487,11 +1573,12 @@ async def lifespan(app: FastAPI):
     app.state.dhcp_server = _dhcp_server
 
     # 7. Setup Captive Portal portproxy on LAN IP
-    try:
-        active_port = int(os.environ.get("GENROUTER_ACTIVE_PORT", "9000"))
-        setup_captive_portproxy(config.lan_gateway_ip, active_port)
-    except Exception as e:
-        logger.error(f"[Main] Setup captive portproxy error: {e}")
+    if _singbox_manager:
+        try:
+            active_port = int(os.environ.get("GENROUTER_ACTIVE_PORT", "9000"))
+            setup_captive_portproxy(config.lan_gateway_ip, active_port)
+        except Exception as e:
+            logger.error(f"[Main] Setup captive portproxy error: {e}")
 
     # 8. Start Auto-Rotate background loop
     asyncio.create_task(auto_rotate_loop(app))
@@ -1531,6 +1618,15 @@ async def lifespan(app: FastAPI):
 
 from app.update_manager import CLIENT_VERSION
 
+def _load_or_create_api_token() -> str:
+    """Load the management API token from environment.
+
+    If set, remote management API requests must supply this Bearer token.
+    Web dashboard requests from the same origin are auto-allowed so the UI works seamlessly.
+    """
+    return os.environ.get("GENROUTER_API_TOKEN", "").strip()
+
+
 app = FastAPI(
     title=f"GenRouter v{CLIENT_VERSION}",
     description="PhoneFarm GenRouter — Transparent Proxy Router",
@@ -1538,23 +1634,45 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-@app.middleware("http")
-async def add_cors_header(request: Request, call_next):
-    origin = request.headers.get("Origin", "*")
-    if request.method == "OPTIONS":
-        response = Response()
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        return response
 
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = origin
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
+def _allowed_origins() -> list[str]:
+    raw = os.environ.get("GENROUTER_ALLOWED_ORIGINS", "")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+_api_token = _load_or_create_api_token()
+if _api_token:
+    logger.info("[Security] Management API token authentication is ENABLED via GENROUTER_API_TOKEN environment variable.")
+else:
+    logger.info("[Security] Management API authentication is unrestricted (GENROUTER_API_TOKEN not set).")
+
+
+@app.middleware("http")
+async def require_management_token(request: Request, call_next):
+    # Only enforce token if GENROUTER_API_TOKEN is explicitly configured in environment
+    if _api_token:
+        protected = request.url.path.startswith("/api/") and request.url.path not in {"/api/health"}
+        if protected:
+            authorization = request.headers.get("Authorization", "")
+            provided = authorization.removeprefix("Bearer ").strip()
+            if not secrets.compare_digest(provided, _api_token):
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "A valid Bearer token is required for this management API."},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+    return await call_next(request)
+
+
+origins = _allowed_origins()
+if origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 # Static files
 STATIC_DIR = os.path.join(RESOURCE_DIR, "static")
@@ -1707,20 +1825,20 @@ def captive_portal(request: Request, config=Depends(get_config), mac_registry=De
         if p.id.startswith("proxy_custom_"):
             continue
         if p.status == "Live":
-            selected = 'selected' if current_proxy == p.id else ''
-            proxies_options += f'<option value="{p.id}" {selected}>{p.id.replace("proxy_", "")} ({p.host}:{p.port} - {p.latency}ms)</option>\n'
+            selected = ' selected' if current_proxy == p.id else ''
+            proxy_id_attr = html.escape(p.id, quote=True)
+            proxy_label = html.escape(f"{p.id.replace('proxy_', '')} ({p.host}:{p.port} - {p.latency}ms)")
+            proxies_options += f'<option value="{proxy_id_attr}"{selected}>{proxy_label}</option>\n'
             
     custom_init_js = ""
     if current_proxy and current_proxy.startswith("proxy_custom_"):
         custom_p = next((p for p in config.proxies if p.id == current_proxy), None)
         if custom_p:
             custom_init_js = f'''
-            document.getElementById("customType").value = "{custom_p.type}";
-            document.getElementById("customHost").value = "{custom_p.host}";
-            document.getElementById("customPort").value = "{custom_p.port}";
-            document.getElementById("customUser").value = "{custom_p.username or ''}";
-            document.getElementById("customPass").value = "{custom_p.password or ''}";
-            document.getElementById("proxyRawInput").value = "{custom_p.host}:{custom_p.port}{':' + custom_p.username if custom_p.username else ''}{':' + custom_p.password if custom_p.password else ''}";
+            document.getElementById("customType").value = {json.dumps(custom_p.type)};
+            document.getElementById("customHost").value = {json.dumps(custom_p.host)};
+            document.getElementById("customPort").value = {json.dumps(str(custom_p.port))};
+            document.getElementById("customUser").value = {json.dumps(custom_p.username or '')};
             '''
 
     html_content = f'''

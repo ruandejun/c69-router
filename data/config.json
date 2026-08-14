@@ -1,12 +1,12 @@
 {
   "lan_interface": "Ethernet 3",
-  "lan_gateway_ip": "192.168.137.1",
+  "lan_gateway_ip": "192.168.10.1",
   "lan_subnet_mask": "255.255.255.0",
-  "wan_interface": "Ethernet",
+  "wan_interface": "Wi-Fi",
   "tun_interface": "gen-tun-new",
   "dhcp_enabled": true,
-  "dhcp_range_start": "192.168.137.10",
-  "dhcp_range_end": "192.168.137.200",
+  "dhcp_range_start": "192.168.10.10",
+  "dhcp_range_end": "192.168.10.250",
   "dhcp_lease_time": 3600,
   "dns_server": "9.9.9.9",
   "bypass_cidrs": [
@@ -20,8 +20,8 @@
   "block_direct_devices": false,
   "direct_whitelist": [],
   "default_device_rotate_minutes": 0,
-  "wifi_hotspot_enabled": true,
-  "wifi_hotspot_ssid": "c69-router",
+  "wifi_hotspot_enabled": false,
+  "wifi_hotspot_ssid": "c69-router-admin-pc",
   "wifi_hotspot_password": "matkhau123",
   "proxies": [
     {

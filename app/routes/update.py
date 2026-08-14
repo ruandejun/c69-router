@@ -53,7 +53,11 @@ def apply_update_now(
 
     def _run():
         try:
-            update_manager.apply_update_and_exit(state["download_url"], on_before_exit=_cleanup_before_exit)
+            update_manager.apply_update_and_exit(
+                state["download_url"],
+                state["sha256"],
+                on_before_exit=_cleanup_before_exit,
+            )
         except Exception as e:
             logger.error(f"[AutoUpdate] Apply update thất bại: {e}")
 

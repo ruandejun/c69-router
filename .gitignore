@@ -29,7 +29,18 @@ dist/
 sing-box.exe
 wintun.dll
 sing-box-config.json
+# Local management API token and runtime state (may contain proxy credentials/MACs)
+data/api_token.txt
+# These files remain tracked for legacy compatibility; do not add newly generated state.
+data/config.json
+data/mac_registry.json
+data/machine_id.txt
+# Local environment template; real .env remains ignored
+.env.example
 
 # Scratch & Temporary files
 scratch/
 Wi-Fi-*.xml
+
+data/.setup_done
+

@@ -202,12 +202,6 @@ class SingBoxManager:
         config = self._config
         devices = self._registry.get_all_devices()
 
-        if not devices:
-            # No devices → write empty config
-            with open(SINGBOX_CONFIG, "w", encoding="utf-8") as f:
-                json.dump({"_note": "No devices, sing-box not needed"}, f, indent=2)
-            return False
-
         # ── Parse bypass CIDRs ──
         # Chỉ exclude các địa chỉ local thực sự (localhost, link-local, multicast)
         # KHÔNG exclude 192.168.0.0/16 vì điều đó sẽ block traffic điện thoại (192.168.10.x) đi internet
@@ -702,17 +696,20 @@ class SingBoxManager:
             except Exception:
                 pass
 
-        # CRITICAL FIX: Remove GenRouterNAT before starting sing-box.
-        # Windows NAT masquerades phone IPs (192.168.10.x) → TUN IP (172.19.0.1)
-        # before entering sing-box, breaking source_ip_cidr routing rules.
-        # sing-box direct-out with auto_detect_interface=True handles masquerade itself.
-        _lan_subnet = "192.168.10.0/24"
-        try:
-            import ipaddress as _ip
-            _lan_subnet = str(_ip.ip_interface(f"{self._config.lan_gateway_ip}/24").network)
-        except Exception:
-            pass
-        remove_nat_for_singbox(lan_subnet=_lan_subnet)
+        # CRITICAL: Windows NAT must be removed only for the custom wired-LAN mode.
+        # In Mobile Hotspot mode, SharedAccess/ICS owns NAT for 192.168.137.0/24;
+        # deleting GenRouterNAT is unnecessary and any related setup may disrupt hotspot.
+        _hotspot_mode = getattr(self._config, "wifi_hotspot_enabled", False)
+        if not _hotspot_mode:
+            _lan_subnet = "192.168.10.0/24"
+            try:
+                import ipaddress as _ip
+                _lan_subnet = str(_ip.ip_interface(f"{self._config.lan_gateway_ip}/24").network)
+            except Exception:
+                pass
+            remove_nat_for_singbox(lan_subnet=_lan_subnet)
+        else:
+            logger.info("[SingBox] Hotspot/ICS mode: preserving Windows ICS NAT.")
 
         # Cleanup orphan TUN interface trước khi start để tránh lỗi:
         # "Cannot create a file when that file already exists"
@@ -947,6 +944,12 @@ $proc.Id | Out-File -FilePath "{SINGBOX_PID_FILE}" -Encoding ascii -NoNewline
         if not restore_nat:
             return
 
+        # In hotspot/ICS mode the operating system owns NAT. Do not recreate a custom
+        # WinNat rule during shutdown/restart, otherwise SharedAccess can be disrupted.
+        if getattr(self._config, "wifi_hotspot_enabled", False):
+            logger.info("[SingBox] Hotspot/ICS mode: skip restoring custom NAT.")
+            return
+
         # Restore GenRouterNAT so direct-traffic devices can still access internet
         wan_interface = self._config.wan_interface or detect_wan_interface()
         lan_subnet = "192.168.10.0/24"
@@ -1154,6 +1157,16 @@ $proc.Id | Out-File -FilePath "{SINGBOX_PID_FILE}" -Encoding ascii -NoNewline
         self._apply_epoch += 1
         has_devices = self.generate_config()
         if not has_devices:
+            try:
+                from app.config import load_config
+                cfg = load_config()
+                if getattr(cfg, "wifi_hotspot_enabled", False):
+                    logger.info("[SingBox] Hotspot mode: keeping sing-box running even without proxy devices.")
+                    self.start()
+                    return self.is_running
+            except Exception:
+                pass
+
             self.stop()  # tắt hẳn → khôi phục NAT cho thiết bị đi direct
             self._live_device_dns_bucket = {}
             logger.info("[SingBox] No devices with proxy → stopped.")

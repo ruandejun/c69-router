@@ -14,6 +14,9 @@ và việc apply LUÔN cần người dùng bấm xác nhận trên dashboard (k
 vì 1 bản lỗi tự áp dụng sẽ restart router đang phục vụ hàng trăm thiết bị live cùng lúc.
 """
 
+import hashlib
+import re
+import secrets
 import os
 import json
 import logging
@@ -22,6 +25,7 @@ import subprocess
 import ssl
 import urllib.request
 from typing import Optional, Callable
+from urllib.parse import urlparse
 
 from app.config import PROJECT_DIR
 
@@ -29,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 CLIENT_VERSION = "2.1.0"
 ROUTER_VERSION_URL = "https://c69.us/api/router-version/"
+UPDATE_ALLOWED_HOSTS = {"c69.us", "www.c69.us", "cdn.c69.us"}
 EXE_NAME = "c69-router.exe"
 UPDATER_EXE_NAME = "c69update.exe"
 
@@ -39,6 +44,7 @@ _state = {
     "current_version": CLIENT_VERSION,
     "version": "",
     "download_url": "",
+    "sha256": "",
     "changelog": "",
     "error": None,
 }
@@ -58,21 +64,36 @@ def _is_newer(server_version: str) -> bool:
         return bool(server_version) and server_version != CLIENT_VERSION
 
 
+def _validate_update_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in UPDATE_ALLOWED_HOSTS:
+        raise ValueError("Update URL must use HTTPS and an approved C69 host")
+    return url
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def check_for_update() -> dict:
     """Gọi /api/router-version/, cập nhật _state. Trả về state mới nhất (kể cả khi lỗi)."""
     try:
-        ctx = ssl._create_unverified_context()
         req = urllib.request.Request(
             ROUTER_VERSION_URL,
             headers={"User-Agent": f"C69Router/{CLIENT_VERSION}"}
         )
-        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
 
         server_version = data.get("version", "")
-        download_url = data.get("download_url", "")
+        download_url = _validate_update_url(data.get("download_url", "")) if data.get("download_url") else ""
+        sha256 = str(data.get("sha256", "")).lower().strip()
         changelog = data.get("changelog", "")
-        available = bool(server_version and download_url and _is_newer(server_version))
+        available = bool(server_version and download_url and re.fullmatch(r"[0-9a-f]{64}", sha256) and _is_newer(server_version))
 
         with _state_lock:
             _state.update({
@@ -80,6 +101,7 @@ def check_for_update() -> dict:
                 "available": available,
                 "version": server_version,
                 "download_url": download_url,
+                "sha256": sha256,
                 "changelog": changelog,
                 "error": None,
             })
@@ -94,20 +116,31 @@ def check_for_update() -> dict:
     return get_state()
 
 
-def _download(url: str, dest_path: str):
-    ctx = ssl._create_unverified_context()
+def _download(url: str, dest_path: str, expected_sha256: str):
+    _validate_update_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": f"C69Router/{CLIENT_VERSION}"})
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    with urllib.request.urlopen(req, context=ctx, timeout=180) as resp:
+    with urllib.request.urlopen(req, timeout=180) as resp:
         with open(dest_path, "wb") as f:
             while True:
                 chunk = resp.read(65536)
                 if not chunk:
                     break
                 f.write(chunk)
+    actual_sha256 = _sha256_file(dest_path)
+    if not secrets.compare_digest(actual_sha256, expected_sha256.lower()):
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        raise ValueError("Downloaded update checksum does not match the signed release metadata")
 
 
-def apply_update_and_exit(download_url: str, on_before_exit: Optional[Callable[[], None]] = None) -> None:
+def apply_update_and_exit(
+    download_url: str,
+    expected_sha256: str,
+    on_before_exit: Optional[Callable[[], None]] = None,
+) -> None:
     """Tải bản zip mới, spawn c69update.exe rồi THOÁT tiến trình hiện tại.
 
     Chạy hàm này trong 1 thread nền (KHÔNG gọi trực tiếp từ request handler) — nó block
@@ -122,7 +155,7 @@ def apply_update_and_exit(download_url: str, on_before_exit: Optional[Callable[[
     zip_path = os.path.join(app_dir, "update", "c69-router.zip")
 
     logger.info(f"[AutoUpdate] Đang tải bản mới từ {download_url} ...")
-    _download(download_url, zip_path)
+    _download(download_url, zip_path, expected_sha256)
     logger.info(f"[AutoUpdate] Tải xong: {zip_path} ({os.path.getsize(zip_path)/1024/1024:.1f} MB)")
 
     updater_exe = os.path.join(app_dir, UPDATER_EXE_NAME)

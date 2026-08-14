@@ -8,7 +8,10 @@ DeviceConfig dùng MAC làm primary key để persist proxy binding qua reconnec
 import json
 import os
 import time
-from pydantic import BaseModel, Field
+import ipaddress
+import re
+import secrets
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional
 
 import sys
@@ -44,9 +47,46 @@ class ProxyConfig(BaseModel):
     blacklisted: Optional[bool] = None           # None = not checked yet
     blacklisted_on: List[str] = Field(default_factory=list)  # DNSBL names
     blacklist_checked_at: Optional[float] = None # Unix timestamp of last check
-    # DNS server dùng cho proxy này (khi device được gán proxy — DNS sẽ đi qua proxy đến server này)
-    # Ví dụ: "1.1.1.1" (Cloudflare), "8.8.8.8" (Google), "208.67.222.222" (OpenDNS US), etc.
     dns_server: str = "1.1.1.1"
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 128 or not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+            raise ValueError("Proxy ID must contain only letters, digits, dot, underscore, or dash")
+        return value
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, value: str) -> str:
+        value = value.lower().strip()
+        if value not in {"socks", "socks5", "http"}:
+            raise ValueError("Proxy type must be socks5 or http")
+        return value
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 253 or any(char.isspace() for char in value):
+            raise ValueError("Proxy host is invalid")
+        return value
+
+    @field_validator("port")
+    @classmethod
+    def validate_port(cls, value: int) -> int:
+        if not 1 <= value <= 65535:
+            raise ValueError("Proxy port must be between 1 and 65535")
+        return value
+
+    @field_validator("dns_server")
+    @classmethod
+    def validate_dns_server(cls, value: str) -> str:
+        try:
+            return str(ipaddress.IPv4Address(value.strip()))
+        except ValueError as exc:
+            raise ValueError("DNS server must be a valid IPv4 address") from exc
 
 
 class DeviceConfig(BaseModel):
@@ -105,52 +145,95 @@ class AppConfig(BaseModel):
     # Virtual adapter được tạo ra sẽ tự động được dùng làm lan_interface.
     wifi_hotspot_enabled: bool = False
     wifi_hotspot_ssid: str = "C69-Router"
-    wifi_hotspot_password: str = "c69router123"
+    wifi_hotspot_password: str = Field(default_factory=lambda: secrets.token_urlsafe(12)[:16])
 
     # ── Data ──
     proxies: List[ProxyConfig] = Field(default_factory=list)
 
+    @field_validator("lan_gateway_ip", "dhcp_range_start", "dhcp_range_end", "dns_server")
+    @classmethod
+    def validate_ipv4_fields(cls, value: str) -> str:
+        try:
+            return str(ipaddress.IPv4Address(value.strip()))
+        except ValueError as exc:
+            raise ValueError("Must be a valid IPv4 address") from exc
+
+    @field_validator("lan_subnet_mask")
+    @classmethod
+    def validate_subnet_mask(cls, value: str) -> str:
+        try:
+            ipaddress.IPv4Network(f"0.0.0.0/{value.strip()}")
+            return value.strip()
+        except ValueError as exc:
+            raise ValueError("Must be a valid IPv4 subnet mask") from exc
+
+    @field_validator("dhcp_lease_time")
+    @classmethod
+    def validate_lease_time(cls, value: int) -> int:
+        if not 60 <= value <= 604800:
+            raise ValueError("DHCP lease time must be between 60 seconds and 7 days")
+        return value
+
+    @field_validator("auto_rotate_minutes", "default_device_rotate_minutes")
+    @classmethod
+    def validate_rotation_minutes(cls, value: int) -> int:
+        if not 0 <= value <= 43200:
+            raise ValueError("Rotation interval must be between 0 and 43200 minutes")
+        return value
+
+    @field_validator("auto_assign_mode")
+    @classmethod
+    def validate_auto_assign_mode(cls, value: str) -> str:
+        if value not in {"balance", "exclusive"}:
+            raise ValueError("auto_assign_mode must be balance or exclusive")
+        return value
+
+    @model_validator(mode="after")
+    def validate_network_ranges(self):
+        network = ipaddress.IPv4Network(f"{self.lan_gateway_ip}/{self.lan_subnet_mask}", strict=False)
+        start = ipaddress.IPv4Address(self.dhcp_range_start)
+        end = ipaddress.IPv4Address(self.dhcp_range_end)
+        gateway = ipaddress.IPv4Address(self.lan_gateway_ip)
+        if start not in network or end not in network or start > end:
+            raise ValueError("DHCP range must be ordered and belong to the LAN subnet")
+        if gateway in {start, end} or start <= gateway <= end:
+            raise ValueError("DHCP range must not include the LAN gateway IP")
+        if self.wifi_hotspot_enabled and network != ipaddress.IPv4Network("192.168.137.0/24"):
+            raise ValueError(
+                "Windows Mobile Hotspot uses the ICS subnet 192.168.137.0/24; "
+                "disable hotspot mode before configuring a custom LAN subnet"
+            )
+        return self
 
 
 # ─── Config Load / Save ─────────────────────────────────
 
 def _generate_hotspot_ssid() -> str:
-    """Tạo SSID WiFi hotspot unique cho máy này, dạng 'C69-Router-XXXX'.
+    """Tạo SSID duy nhất cho WiFi Hotspot dạng 'c69-router-<hostname>'.
 
-    Dùng 4 ký tự cuối của hostname (loại bỏ ký tự đặc biệt) để tạo suffix nhất quán:
-    - Không đổi giữa các lần restart
-    - Khác nhau giữa các máy trong cùng mạng
-    Nếu hostname quá ngắn/không dùng được → dùng 4 hex ngẫu nhiên cố định.
+    Dùng tên laptop/máy tính để tạo SSID dễ nhận biết:
+    - c69-router-admin-pc
+    - c69-router-laptop1
+    Tránh trùng SSID khi có nhiều máy chạy c69-router trong cùng một khu vực.
     """
     import socket
     import re
     try:
         hostname = socket.gethostname()
-        # Chỉ giữ chữ cái + số, bỏ ký tự đặc biệt
-        clean = re.sub(r'[^A-Za-z0-9]', '', hostname)
-        if len(clean) >= 4:
-            suffix = clean[-4:].upper()
-        elif len(clean) > 0:
-            suffix = clean.upper().ljust(4, '0')
-        else:
-            raise ValueError("empty hostname")
+        clean = re.sub(r'[^A-Za-z0-9-]', '', hostname).strip('-').lower()
+        if clean:
+            return f"c69-router-{clean}"
     except Exception:
-        import random
-        suffix = '{:04X}'.format(random.randint(0, 0xFFFF))
-    return f"C69-Router-{suffix}"
+        pass
+    import random
+    suffix = '{:04x}'.format(random.randint(0, 0xFFFF))
+    return f"c69-router-{suffix}"
 
 
 def load_config() -> AppConfig:
-    """Load config from data/config.json. Creates default if not exists."""
+    """Load config from data/config.json. Creates a safe default if not exists."""
     if not os.path.exists(CONFIG_PATH):
-        # ── FIRST RUN: tạo config mặc định với hotspot tự động bật ──
-        # SSID unique theo hostname để không trùng giữa các máy,
-        # password mặc định dễ nhớ, user có thể đổi trong Settings sau.
-        config = AppConfig(
-            wifi_hotspot_enabled=True,
-            wifi_hotspot_ssid=_generate_hotspot_ssid(),
-            wifi_hotspot_password="matkhau123",
-        )
+        config = AppConfig()
         save_config(config)
         return config
 

@@ -510,7 +510,7 @@ def download_binaries() -> None:
     logger.info(f"[Network/Linux] Downloading sing-box from {url}...")
 
     import ssl
-    ctx = ssl._create_unverified_context()
+    ctx = ssl.create_default_context()
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, context=ctx) as resp:

@@ -10,7 +10,10 @@ Cách chạy:
   python build_router.py           # build + upload R2
   python build_router.py --local   # build only, no upload
 """
+import hashlib
+import json
 import os
+import re
 import sys
 import platform
 import subprocess
@@ -61,10 +64,10 @@ CLOUDFLARE_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 R2_BUCKET_NAME        = os.environ.get("CF_R2_BUCKET", "c69-releases")
 R2_PUBLIC_URL         = os.environ.get("CF_R2_PUBLIC_URL", "")
 
-FALLBACK_SFTP_HOST  = "167.233.89.198"
-FALLBACK_SFTP_USER  = "root"
-FALLBACK_SFTP_PASS  = "fJU9JtkbELfi"
-FALLBACK_REMOTE_PATH = "/root/storagon/static"
+FALLBACK_SFTP_HOST = os.environ.get("C69_FALLBACK_SFTP_HOST", "")
+FALLBACK_SFTP_USER = os.environ.get("C69_FALLBACK_SFTP_USER", "")
+FALLBACK_SFTP_PASS = os.environ.get("C69_FALLBACK_SFTP_PASS", "")
+FALLBACK_REMOTE_PATH = os.environ.get("C69_FALLBACK_REMOTE_PATH", "")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -307,11 +310,32 @@ def upload_to_r2(zip_path: str) -> str:
         Callback=progress,
         ExtraArgs={"ContentType": "application/zip"},
     )
+    with open(zip_path, "rb") as package_file:
+        sha256 = hashlib.sha256(package_file.read()).hexdigest()
+    manifest = {
+        "version": os.environ.get("C69_ROUTER_VERSION", ""),
+        "download_url": f"{R2_PUBLIC_URL.rstrip('/')}/{ZIP_KEY}" if R2_PUBLIC_URL else "",
+        "sha256": sha256,
+    }
+    if manifest["version"] and not re.fullmatch(r"\d+(?:\.\d+){1,3}", manifest["version"]):
+        raise ValueError("C69_ROUTER_VERSION must be a semantic version such as 2.1.1")
+    if manifest["version"] and manifest["download_url"]:
+        manifest_key = f"{ZIP_KEY}.json"
+        s3.put_object(
+            Bucket=R2_BUCKET_NAME,
+            Key=manifest_key,
+            Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+        print(f"  Manifest SHA-256 uploaded: {manifest_key}")
     print(f"\n  Upload hoàn tất!")
     return f"{R2_PUBLIC_URL.rstrip('/')}/{ZIP_KEY}" if R2_PUBLIC_URL else f"r2://{R2_BUCKET_NAME}/{ZIP_KEY}"
 
 
 def upload_to_sftp(zip_path: str) -> str:
+    if not all([FALLBACK_SFTP_HOST, FALLBACK_SFTP_USER, FALLBACK_SFTP_PASS, FALLBACK_REMOTE_PATH]):
+        print("  [SFTP] Fallback credentials are not configured — skipping SFTP upload.")
+        return ""
     try:
         import paramiko
     except ImportError:
@@ -327,7 +351,7 @@ def upload_to_sftp(zip_path: str) -> str:
         print(f"\r  {transferred/1024/1024:.2f} MB / {total/1024/1024:.2f} MB ({pct:.1f}%)", end='', flush=True)
 
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.load_system_host_keys()
     try:
         ssh.connect(FALLBACK_SFTP_HOST, username=FALLBACK_SFTP_USER,
                     password=FALLBACK_SFTP_PASS, timeout=30)

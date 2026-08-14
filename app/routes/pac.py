@@ -4,6 +4,7 @@ GenRouter v2.0 — PAC File Routes
 Serves proxy auto-config (PAC) files for devices.
 """
 
+import os
 from fastapi import APIRouter, Request, Response, Depends
 from typing import Optional
 import logging
