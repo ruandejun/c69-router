@@ -160,40 +160,29 @@ def setup_firewall_rules():
     $ErrorActionPreference = 'SilentlyContinue'
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-    # Remove Python blocking rules
-    $pythonPath = "{python_exe}"
-    if (Test-Path $pythonPath) {{
-        $blockRules = Get-NetFirewallRule -Action Block -ErrorAction SilentlyContinue
-        foreach ($rule in $blockRules) {{
-            $app = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
-            if ($app -and ($app.Program -like "*python.exe" -or $rule.DisplayName -eq "python.exe")) {{
-                Remove-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue
-            }}
-        }}
-    }}
-
     # API Ports 8000-9099
     if (-not (Get-NetFirewallRule -DisplayName 'GenRouter API Ports' -ErrorAction SilentlyContinue)) {{
-        New-NetFirewallRule -DisplayName 'GenRouter API Ports' -Direction Inbound -Protocol TCP -LocalPort 8000-9099 -Action Allow -Enabled True -Profile Any
+        New-NetFirewallRule -DisplayName 'GenRouter API Ports' -Direction Inbound -Protocol TCP -LocalPort 8000-9099 -Action Allow -Enabled True -Profile Any | Out-Null
     }}
 
     # DHCP UDP 67/68
     if (-not (Get-NetFirewallRule -DisplayName 'GenRouter DHCP 67' -ErrorAction SilentlyContinue)) {{
-        New-NetFirewallRule -DisplayName 'GenRouter DHCP 67' -Direction Inbound -Protocol UDP -LocalPort 67 -Action Allow -Enabled True -Profile Any
+        New-NetFirewallRule -DisplayName 'GenRouter DHCP 67' -Direction Inbound -Protocol UDP -LocalPort 67 -Action Allow -Enabled True -Profile Any | Out-Null
     }}
     if (-not (Get-NetFirewallRule -DisplayName 'GenRouter DHCP 68' -ErrorAction SilentlyContinue)) {{
-        New-NetFirewallRule -DisplayName 'GenRouter DHCP 68' -Direction Inbound -Protocol UDP -LocalPort 68 -Action Allow -Enabled True -Profile Any
+        New-NetFirewallRule -DisplayName 'GenRouter DHCP 68' -Direction Inbound -Protocol UDP -LocalPort 68 -Action Allow -Enabled True -Profile Any | Out-Null
     }}
 
     # DNS UDP 53 (for DHCP clients)
     if (-not (Get-NetFirewallRule -DisplayName 'GenRouter DNS 53' -ErrorAction SilentlyContinue)) {{
-        New-NetFirewallRule -DisplayName 'GenRouter DNS 53' -Direction Inbound -Protocol UDP -LocalPort 53 -Action Allow -Enabled True -Profile Any
+        New-NetFirewallRule -DisplayName 'GenRouter DNS 53' -Direction Inbound -Protocol UDP -LocalPort 53 -Action Allow -Enabled True -Profile Any | Out-Null
     }}
 
-    # Sing-Box program
-    if (Test-Path '{singbox_exe}') {{
-        if (-not (Get-NetFirewallRule -DisplayName 'GenRouter Sing-Box' -ErrorAction SilentlyContinue)) {{
-            New-NetFirewallRule -DisplayName 'GenRouter Sing-Box' -Direction Inbound -Program '{singbox_exe}' -Action Allow -Enabled True -Profile Any
+    # Mihomo program
+    $mihomoExe = "{os.path.join(PROJECT_DIR, 'mihomo.exe')}"
+    if (Test-Path $mihomoExe) {{
+        if (-not (Get-NetFirewallRule -DisplayName 'GenRouter Mihomo' -ErrorAction SilentlyContinue)) {{
+            New-NetFirewallRule -DisplayName 'GenRouter Mihomo' -Direction Inbound -Program $mihomoExe -Action Allow -Enabled True -Profile Any | Out-Null
         }}
     }}
 
@@ -246,7 +235,7 @@ def detect_wan_interface() -> str:
             return "eth0"
 
     try:
-        # Lay tat ca candidates co default route voi NextHop thuc (khong phai 0.0.0.0)
+        # Lay tat ca candidates co default route, adapter Status=Up va co IP IPv4 thuc
         ps = (
             "$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' "
             "| Where-Object {$_.NextHop -ne '0.0.0.0'} "
@@ -254,8 +243,11 @@ def detect_wan_interface() -> str:
             "@{N='TotalMetric';E={$_.RouteMetric + $_.InterfaceMetric}};"
             "foreach ($r in $routes) {"
             "  $a = Get-NetAdapter -Name $r.InterfaceAlias -ErrorAction SilentlyContinue;"
-            "  if ($a) {"
-            "    Write-Output \"$($r.InterfaceAlias)|$($a.PhysicalMediaType)|$($r.TotalMetric)\""
+            "  if ($a -and $a.Status -eq 'Up') {"
+            "    $ip = Get-NetIPAddress -InterfaceAlias $r.InterfaceAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) };"
+            "    if ($ip) {"
+            "      Write-Output \"$($r.InterfaceAlias)|$($a.PhysicalMediaType)|$($r.TotalMetric)\""
+            "    }"
             "  }"
             "}"
         )
@@ -266,9 +258,9 @@ def detect_wan_interface() -> str:
         lines = [l.strip() for l in result.stdout.strip().splitlines() if '|' in l]
 
         if not lines:
-            # No default route found at all
-            logger.warning("[Network] No default route found, falling back to 'Wi-Fi'")
-            return "Wi-Fi"
+            # Fallback to Ethernet if any is Up
+            logger.warning("[Network] No default route found with UP adapter, falling back to 'Ethernet'")
+            return "Ethernet"
 
         ethernet_candidates = []  # 802.3
         wifi_candidates = []      # NativeWifi / 802.11
@@ -474,26 +466,27 @@ def is_lan_interface_valid(interface_name: str, wan_interface: str = "",
 
 
 def is_wan_interface_valid(interface_name: str) -> bool:
-    """Kiểm tra interface có đang thực sự là đường ra internet không (có default route
-    với NextHop thật, không phải APIPA/disconnected).
-
-    Dùng để phát hiện config.wan_interface bị lỗi thời (vd đổi máy, đổi tên card,
-    card WiFi đang mất kết nối) — vì trước đây code chỉ tin theo giá trị lưu trong
-    data/config.json (mặc định cứng 'Wi-Fi') mà không xác minh, dẫn đến NAT/sing-box
-    trỏ ra card chết trong khi card khác mới thực sự có internet.
+    """Kiểm tra interface có đang thực sự là đường ra internet không (adapter UP,
+    có IP IPv4 thật không phải APIPA, và có default route với NextHop thật).
     """
     if platform.system() != "Windows" or not interface_name:
-        return True  # Không xác minh được thì tin theo config, tránh false positive
+        return True
 
     try:
+        ps = (
+            f"$a = Get-NetAdapter -Name '{interface_name}' -ErrorAction SilentlyContinue; "
+            f"if (-not $a -or $a.Status -ne 'Up') {{ Write-Output 'NO'; exit }}; "
+            f"$ip = Get-NetIPAddress -InterfaceAlias '{interface_name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {{ -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) }}; "
+            f"if (-not $ip) {{ Write-Output 'NO'; exit }}; "
+            f"$r = Get-NetRoute -InterfaceAlias '{interface_name}' -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object {{ $_.NextHop -ne '0.0.0.0' }}; "
+            f"if (-not $r) {{ Write-Output 'NO'; exit }}; "
+            f"Write-Output 'YES'"
+        )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             f"Get-NetRoute -InterfaceAlias '{interface_name}' -DestinationPrefix '0.0.0.0/0' "
-             f"-ErrorAction SilentlyContinue | Where-Object {{ $_.NextHop -ne '0.0.0.0' }} | "
-             f"Select-Object -First 1 -ExpandProperty NextHop"],
+            ["powershell", "-NoProfile", "-Command", ps],
             capture_output=True, text=True, timeout=5
         )
-        return bool(result.stdout.strip())
+        return "YES" in result.stdout.strip()
     except Exception as e:
         logger.warning(f"[Network] Failed to verify WAN interface '{interface_name}': {e}")
         return True
@@ -602,67 +595,83 @@ def ensure_lan_ip_assigned(lan_interface: str, lan_gateway_ip: str, subnet_mask:
 # ─── Binary Downloads ───────────────────────────────────
 
 
-def setup_interface_dns(
-    lan_interface: str,
-    tun_interface: str,
-    primary_dns: str = "1.1.1.1",
-    secondary_dns: str = "1.0.0.1",
-) -> bool:
-    """Cai DNS cho chinh Windows adapter (LAN + TUN) cua may host, KHONG lien quan DNS DHCP phat cho phone.
-
-    Phone nhan DNS = lan_gateway_ip tu DHCP (xem main.py), roi duoc hijack-dns trong
-    TUN chuyen tiep. 1.1.1.1/1.0.0.1 o day chi la DNS cho ban than may host, va cung
-    la 2 IP nam trong route_exclude_address (singbox_manager.py) de sing-box tu resolve
-    upstream ma khong bi loop lai vao chinh TUN cua no.
-
-    Args:
-        lan_interface: Ten LAN adapter (vi du: "Ethernet 3")
-        tun_interface: Ten TUN adapter (vi du: "genrouter-tun-9")
-        primary_dns: Primary DNS (default 1.1.1.1 Cloudflare)
-        secondary_dns: Secondary DNS (default 1.0.0.1 Cloudflare secondary)
+def clear_interface_dns(lan_interface: str = "", tun_interface: str = "", wan_interface: str = "") -> bool:
+    """Xóa sạch toàn bộ DNS server trên LAN và TUN adapter để đảm bảo DNS luôn rỗng (EMPTY).
+    Đảm bảo Host PC chỉ dùng 100% DNS của card WAN thật (Ethernet), không bị DNS multi-homed conflict.
+    QUAN TRỌNG: KHÔNG xóa DNS trên WAN interface — nếu xóa, Host PC mất DNS ngay.
     """
     if platform.system() != "Windows":
-        return False
+        return True
 
-    success = False
-
-    def _set_dns_on(iface: str) -> bool:
+    # Chỉ xóa DNS trên interface được chỉ định — KHÔNG hardcode interface name
+    target_interfaces = set(filter(None, [lan_interface, tun_interface]))
+    # BẢO VỆ WAN: loại bỏ WAN interface ra khỏi danh sách xóa DNS
+    if wan_interface:
+        target_interfaces.discard(wan_interface)
+    if not target_interfaces:
+        logger.info("[DNS] No non-WAN interfaces to clear DNS on, skipping.")
+        return True
+    for iface in target_interfaces:
         try:
-            r1 = subprocess.run(
-                ["netsh", "interface", "ipv4", "set", "dns",
-                 f"name={iface}", "static", primary_dns, "primary"],
-                capture_output=True, text=True, timeout=10
+            ps = (
+                f"Set-DnsClientServerAddress -InterfaceAlias '{iface}' -ResetServerAddresses -ErrorAction SilentlyContinue; "
+                f"Set-DnsClientServerAddress -InterfaceAlias '{iface}' -ServerAddresses @() -ErrorAction SilentlyContinue; "
+                f"netsh interface ipv4 delete dns name='{iface}' all 2>&1 | Out-Null"
             )
-            subprocess.run(
-                ["netsh", "interface", "ipv4", "add", "dns",
-                 f"name={iface}", secondary_dns, "index=2"],
-                capture_output=True, text=True, timeout=10
-            )
-            ok = (r1.returncode == 0)
-            if ok:
-                logger.info(f"[DNS] {iface}: {primary_dns} / {secondary_dns} set OK")
-            else:
-                logger.warning(f"[DNS] {iface} set failed: {r1.stderr.strip()[:80]}")
-            return ok
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=5)
+            logger.info(f"[DNS] ✓ Cleared DNS on '{iface}' (EMPTY)")
         except Exception as e:
-            logger.warning(f"[DNS] Error setting DNS on {iface}: {e}")
-            return False
+            logger.warning(f"[DNS] Failed to clear DNS on '{iface}': {e}")
+    logger.info(f"[DNS] WAN interface '{wan_interface}' DNS PROTECTED (not touched).")
+    return True
 
-    success |= _set_dns_on(lan_interface)
-    success |= _set_dns_on(tun_interface)
-    return success
+
+def setup_interface_dns(lan_interface: str, tun_interface: str, primary_dns: str = "", secondary_dns: str = "", wan_interface: str = "") -> bool:
+    """Alias to clear_interface_dns for backwards compatibility."""
+    return clear_interface_dns(lan_interface=lan_interface, tun_interface=tun_interface, wan_interface=wan_interface)
 
 
 def download_binaries():
-    """Download sing-box.exe and wintun.dll if missing (Windows only)."""
+    """Extract bundled binaries (from PyInstaller) or download mihomo.exe/wintun.dll/sing-box.exe if missing."""
     if platform.system() != "Windows":
         return
 
+    # 1. Trích xuất trực tiếp từ RESOURCE_DIR (PyInstaller _MEIPASS) nếu có
+    from app.config import RESOURCE_DIR
+    for fn in ["mihomo.exe", "sing-box.exe", "wintun.dll", "geoip.metadb"]:
+        src = os.path.join(RESOURCE_DIR, fn)
+        dst = os.path.join(PROJECT_DIR, fn)
+        if not os.path.exists(dst) and os.path.exists(src):
+            try:
+                import shutil
+                shutil.copy2(src, dst)
+                logger.info(f"[Network] Extracted bundled '{fn}' to {PROJECT_DIR}")
+            except Exception as e:
+                logger.warning(f"[Network] Could not extract bundled {fn}: {e}")
+
+    mihomo_exe = os.path.join(PROJECT_DIR, "mihomo.exe")
     singbox_exe = os.path.join(PROJECT_DIR, "sing-box.exe")
     wintun_dll = os.path.join(PROJECT_DIR, "wintun.dll")
 
     import ssl
     context = ssl.create_default_context()
+
+    if not os.path.exists(mihomo_exe):
+        logger.info("[Network] Downloading mihomo.exe from GitHub...")
+        url = "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-windows-amd64-v1.19.29.zip"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, context=context) as response:
+                zip_data = response.read()
+            with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
+                for name in z.namelist():
+                    if name.endswith(".exe"):
+                        with open(mihomo_exe, "wb") as f:
+                            f.write(z.read(name))
+                        logger.info("[Network] mihomo.exe downloaded successfully!")
+                        break
+        except Exception as e:
+            logger.error(f"[Network] Failed to download mihomo.exe: {e}")
 
     if not os.path.exists(singbox_exe):
         logger.info("[Network] Downloading sing-box.exe from GitHub...")
@@ -702,20 +711,25 @@ def download_binaries():
 # ─── Adjust Interface Metric ────────────────────────────
 
 def adjust_lan_interface_metric(interface_name: str):
-    """Set LAN interface metric to 5 to force limited broadcasts out of it on Windows."""
+    """Set LAN interface metric to 500 (HIGH) to ensure it NEVER outranks WAN in routing.
+    
+    QUAN TRỌNG: Metric phải CAO HƠN WAN (WAN auto-metric thường 25-55).
+    Nếu metric LAN thấp hơn WAN, Windows sẽ route traffic qua LAN (không có internet)
+    thay vì WAN → Host PC mất mạng.
+    """
     if platform.system() != "Windows":
         return
-    logger.info(f"[Network] Adjusting metric for LAN interface '{interface_name}'...")
+    logger.info(f"[Network] Adjusting metric for LAN interface '{interface_name}' to 500 (high, below WAN)...")
     try:
-        # Run PowerShell commands to set manual metric of 5 on Active and Persistent stores
+        # Run PowerShell commands to set manual metric of 500 on Active and Persistent stores
         cmd = [
             "powershell", "-NoProfile", "-Command",
-            f"Set-NetIPInterface -InterfaceAlias '{interface_name}' -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric 5 -PolicyStore ActiveStore -ErrorAction SilentlyContinue; "
-            f"Set-NetIPInterface -InterfaceAlias '{interface_name}' -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric 5 -PolicyStore PersistentStore -ErrorAction SilentlyContinue"
+            f"Set-NetIPInterface -InterfaceAlias '{interface_name}' -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric 500 -PolicyStore ActiveStore -ErrorAction SilentlyContinue; "
+            f"Set-NetIPInterface -InterfaceAlias '{interface_name}' -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric 500 -PolicyStore PersistentStore -ErrorAction SilentlyContinue"
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if res.returncode == 0:
-            logger.info(f"[Network] Successfully adjusted metric for '{interface_name}' to 5.")
+            logger.info(f"[Network] Successfully adjusted metric for '{interface_name}' to 500.")
         else:
             logger.error(f"[Network] Failed to adjust interface metric: {res.stderr}")
     except Exception as e:
@@ -1012,11 +1026,6 @@ def _ensure_nat_prereqs():
     if ($winnat -and $winnat.Status -ne 'Running') {
         Set-Service -Name "WinNat" -StartupType Automatic -ErrorAction SilentlyContinue
         Start-Service -Name "WinNat" -ErrorAction SilentlyContinue
-    }
-    $ics = Get-Service -Name "SharedAccess" -ErrorAction SilentlyContinue
-    if ($ics -and $ics.Status -eq 'Running') {
-        Stop-Service -Name "SharedAccess" -Force -ErrorAction SilentlyContinue
-        Set-Service -Name "SharedAccess" -StartupType Disabled -ErrorAction SilentlyContinue
     }
     """, timeout=15)
 

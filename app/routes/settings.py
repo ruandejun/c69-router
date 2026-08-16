@@ -106,19 +106,6 @@ def update_settings(
             detail=f"Settings saved but routing update failed: {e}",
         )
 
-    # Dong bo DNS tren LAN + TUN adapters
-    try:
-        dns = config.dns_server or "1.1.1.1"
-        secondary = "1.0.0.1" if dns == "1.1.1.1" else "8.8.4.4"
-        setup_interface_dns(
-            lan_interface=config.lan_interface,
-            tun_interface=config.tun_interface,
-            primary_dns=dns,
-            secondary_dns=secondary,
-        )
-    except Exception as e:
-        logger.warning(f"[Settings] DNS sync warning: {e}")
-
     return {"status": "success", "message": "Settings updated"}
 
 
@@ -126,57 +113,52 @@ def update_settings(
 def restart_singbox(
     singbox_manager=Depends(get_singbox_manager),
 ):
-    """Restart sing-box để apply config thay đổi (hot-reload)."""
+    """Restart Mihomo để apply config thay đổi (hot-reload)."""
     if not singbox_manager:
-        raise HTTPException(status_code=503, detail="Sing-box manager not available")
+        raise HTTPException(status_code=503, detail="Router manager not available")
     try:
         singbox_manager.hot_reload()
-        return {"status": "success", "message": "Sing-box restart scheduled (debounced 1s)"}
+        return {"status": "success", "message": "Mihomo restart scheduled (debounced 1s)"}
     except Exception as e:
-        logger.error(f"[Settings] Failed to restart singbox: {e}")
+        logger.error(f"[Settings] Failed to restart router engine: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/singbox-log")
 def get_singbox_log(lines: int = 50):
-    """Lấy N dòng cuối của sing-box log."""
+    """Lấy N dòng cuối của log."""
     import os
     from app.config import PROJECT_DIR
-    log_path = os.path.join(PROJECT_DIR, "sing-box.log")
-    if not os.path.exists(log_path):
-        return {"log": "", "lines": 0}
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-        tail = all_lines[-lines:]
-        return {"log": "".join(tail), "lines": len(tail)}
-    except Exception as e:
-        return {"log": f"Error reading log: {e}", "lines": 0}
+    for fname in ["mihomo.log", "sing-box.log"]:
+        log_path = os.path.join(PROJECT_DIR, fname)
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    all_lines = f.readlines()
+                tail = all_lines[-lines:]
+                return {"log": "".join(tail), "lines": len(tail)}
+            except Exception as e:
+                return {"log": f"Error reading log: {e}", "lines": 0}
+    return {"log": "", "lines": 0}
 
 
 @router.post("/sync-dns")
 def sync_dns_interfaces(config=Depends(get_config)):
-    """Set DNS dong bo tren LAN va TUN interface.
-
-    Goi khi: doi DNS Server trong Settings, sau khi restart sing-box,
-    hoac sau khi doi interface.
-    """
+    """Đảm bảo DNS trên LAN và TUN interface luôn để trống (không hijack DNS máy chủ)."""
+    import subprocess
     try:
-        dns = config.dns_server or "1.1.1.1"
-        secondary = "1.0.0.1" if dns == "1.1.1.1" else "8.8.4.4"
-        ok = setup_interface_dns(
-            lan_interface=config.lan_interface,
-            tun_interface=config.tun_interface,
-            primary_dns=dns,
-            secondary_dns=secondary,
-        )
+        for iface in [config.tun_interface, config.lan_interface]:
+            if iface:
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     f"Set-DnsClientServerAddress -InterfaceAlias '{iface}' -ResetServerAddresses -ErrorAction SilentlyContinue; "
+                     f"Set-DnsClientServerAddress -InterfaceAlias '{iface}' -ServerAddresses @() -ErrorAction SilentlyContinue; "
+                     f"netsh interface ipv4 delete dns name='{iface}' all 2>&1 | Out-Null"],
+                    capture_output=True, text=True, timeout=5
+                )
         return {
-            "status": "success" if ok else "partial",
-            "message": f"DNS {dns} / {secondary} set on {config.lan_interface} + {config.tun_interface}",
-            "lan": config.lan_interface,
-            "tun": config.tun_interface,
-            "primary_dns": dns,
-            "secondary_dns": secondary,
+            "status": "success",
+            "message": f"DNS cleared on {config.lan_interface} + {config.tun_interface} (empty)",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

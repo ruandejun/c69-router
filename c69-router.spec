@@ -24,7 +24,12 @@ else:
 a = Analysis(
     ['run.py'],
     pathex=[],
-    binaries=[],
+    binaries=[
+        ('mihomo.exe', '.'),
+        ('sing-box.exe', '.'),
+        ('wintun.dll', '.'),
+        ('geoip.metadb', '.'),
+    ] if _is_win else [],
     datas=[
         ('static', 'static'),
     ],
@@ -45,6 +50,7 @@ a = Analysis(
         'app.error_reporter',
         'app.platform',
         'requests',
+        'yaml',
     ] + _platform_hidden,
     hookspath=[],
     hooksconfig={},

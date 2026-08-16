@@ -337,14 +337,8 @@ class ClashManager:
                 "enable": True,
                 "stack": "gvisor",
                 "device": "GenRouterTUN",
-                # auto-route: False — tắt để TUN KHÔNG thêm default route system-wide.
-                # Nếu bật auto-route=True: TUN sẽ capture ALL traffic kể cả của Host PC
-                # -> gây loopback "reject loopback connection" và mất mạng trên Host PC.
-                # include-interface đã đủ để TUN chỉ capture traffic từ LAN interfaces.
-                "auto-route": False,
-                # auto-detect-interface: False — specify rõ WAN qua interface-name ở global.
-                # Khi auto-detect-interface=True kết hợp với auto-route=True sẽ tạo traffic loop.
-                "auto-detect-interface": False,
+                "auto-route": True,
+                "auto-detect-interface": True,
                 "strict-route": False,
                 "endpoint-independent-nat": True,
                 "include-interface": lan_ifaces,

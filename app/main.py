@@ -19,6 +19,17 @@ import secrets
 import html
 from contextlib import asynccontextmanager
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 def check_admin_elevation():
     _sys_platform = platform.system()
 
@@ -138,9 +149,9 @@ from app.config import (
     migrate_old_config, PROJECT_DIR, RESOURCE_DIR
 )
 from app.mac_registry import MACRegistry
-from app.singbox_manager import SingBoxManager
+from app.clash_manager import ClashManager as SingBoxManager
 from app.dhcp_server import DHCPServer
-from app.dependencies import get_config, get_mac_registry, get_singbox_manager
+from app.dependencies import get_config, get_mac_registry, get_singbox_manager, get_clash_manager
 
 def setup_captive_portproxy(lan_ip: str, port: int = 9000):
     from app.platform import setup_captive_portproxy as _platform_portproxy
@@ -815,16 +826,8 @@ if ($script:needReboot) {
 
 
 def _recover_wan_from_static_ip(wan_interface: str, lan_gateway_ip: str) -> bool:
-    """Phuc hoi WAN card neu bi gan IP tinh sai do bug cu (lan==wan ghi de IP DHCP).
-
-    Khi bug cu chay: ensure_lan_ip_assigned(WAN_card, '192.168.10.1') da:
-      1. Xoa IP DHCP cua WiFi card (mat internet)
-      2. Gan IP tinh 192.168.10.1 len WAN card
-    Ham nay phat hien va tu dong phuc hoi:
-      - Check WAN card co IP = lan_gateway_ip (vi du 192.168.10.1) khong
-      - Neu co: reset ve DHCP, tat IP tinh, xin cap lai IP tu router
-    Returns: True neu da thuc hien phuc hoi.
-    """
+    """Phuc hoi WAN card neu bi gan IP tinh sai do bug cu (lan==wan ghi de IP DHCP)."""
+    import time
     if platform.system() != "Windows" or not wan_interface or not lan_gateway_ip:
         return False
 
@@ -1510,54 +1513,40 @@ async def lifespan(app: FastAPI):
     # tiếp (không qua debounce), sau đó poll is_running tối đa 30s trước khi yield.
     if platform.system() == "Windows" and _singbox_manager:
         try:
-            logger.info("[Main] Starting sing-box (synchronous, waiting for TUN to be ready)...")
+            logger.info("[Main] Starting Mihomo (synchronous, waiting for TUN to be ready)...")
             _singbox_manager.reload_now()
         except Exception as e:
             logger.error(f"[Main] Initial routing error: {e}")
             from app.error_reporter import report_error
             report_error("Startup", f"Initial routing error: {e}", level="critical", exc=e)
 
-        # Chờ sing-box thực sự running (tối đa 30s) trước khi tiếp tục yield.
-        # reload_now() đã blocking qua start() nhưng cần verify lại vì start() có thể
-        # hoàn thành trước khi process sẵn sàng nhận traffic (VD: Wintun đang init).
+        # Chờ Mihomo thực sự running (tối đa 30s) trước khi tiếp tục yield.
         _sb_wait_start = asyncio.get_event_loop().time()
         _sb_max_wait = 30.0  # giây
         while not _singbox_manager.is_running:
             _elapsed = asyncio.get_event_loop().time() - _sb_wait_start
             if _elapsed >= _sb_max_wait:
                 logger.warning(
-                    f"[Main] ⚠ sing-box chưa running sau {_sb_max_wait:.0f}s — tiếp tục "
-                    f"startup (thiết bị có thể tạm bị lộ IP). Kiểm tra sing-box-err.log."
+                    f"[Main] ⚠ Mihomo chưa running sau {_sb_max_wait:.0f}s — tiếp tục startup."
                 )
                 break
             await asyncio.sleep(0.5)
         else:
             logger.info(
-                f"[Main] ✓ sing-box verified running — TUN proxy active, traffic được bảo vệ."
+                f"[Main] ✓ Mihomo verified running — TUN proxy active, traffic được bảo vệ."
             )
 
-    # 8. Set DNS consistent on LAN + TUN interfaces (chỉ áp dụng cho chính máy host)
-    # Đảm bảo Ethernet 3 và TUN adapter cùng dùng 1.1.1.1 / 1.0.0.1
-    # LƯU Ý: DHCP phát cho PHONE dùng config.lan_gateway_ip (không phải 1.1.1.1),
-    # vì 1.1.1.1 bị route_exclude_address loại khỏi TUN (singbox_manager.py) để tránh
-    # sing-box tự loop — nếu phone dùng thẳng 1.1.1.1 thì DNS/DoT/DoH sẽ thoát TUN,
-    # đi thẳng ra WAN thật thay vì được hijack-dns xử lý.
-    if platform.system() == "Windows" and _singbox_manager:
+        # Xóa sạch toàn bộ DNS trên LAN và TUN adapters để đảm bảo trống 100%
         try:
-            setup_interface_dns(
-                lan_interface=config.lan_interface,
-                tun_interface=config.tun_interface,
-                primary_dns="1.1.1.1",
-                secondary_dns="1.0.0.1",
-            )
+            from app.network_setup import clear_interface_dns
+            clear_interface_dns(lan_interface=config.lan_interface, tun_interface=config.tun_interface, wan_interface=config.wan_interface)
         except Exception as e:
-            logger.warning(f"[Main] DNS interface setup warning: {e}")
+            logger.warning(f"[Main] Clear interface DNS error: {e}")
 
-        # Retry Nagle disable after TUN interface is created (5s after sing-box start)
-        # Lần đầu có thể fail vì TUN interface chưa tồn tại khi optimize_tcp_stack() chạy
+        # Retry Nagle disable after TUN interface is created (5s after Mihomo start)
         def _retry_nagle():
             import time
-            time.sleep(6)   # Wait for sing-box + Wintun to fully initialize
+            time.sleep(6)   # Wait for Mihomo + Wintun to fully initialize
             try:
                 tun_name = config.tun_interface or "GenRouterTUN"
                 results = optimize_tcp_stack(tun_interface_name=tun_name)
@@ -1570,6 +1559,7 @@ async def lifespan(app: FastAPI):
     # Store in app state for FastAPI Dependency Injection
     app.state.mac_registry = _mac_registry
     app.state.singbox_manager = _singbox_manager
+    app.state.clash_manager = _singbox_manager
     app.state.dhcp_server = _dhcp_server
 
     # 7. Setup Captive Portal portproxy on LAN IP

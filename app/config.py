@@ -153,8 +153,11 @@ class AppConfig(BaseModel):
     @field_validator("lan_gateway_ip", "dhcp_range_start", "dhcp_range_end", "dns_server")
     @classmethod
     def validate_ipv4_fields(cls, value: str) -> str:
+        val_clean = value.strip()
+        if val_clean.lower() == "local" or not val_clean:
+            return "1.1.1.1"
         try:
-            return str(ipaddress.IPv4Address(value.strip()))
+            return str(ipaddress.IPv4Address(val_clean))
         except ValueError as exc:
             raise ValueError("Must be a valid IPv4 address") from exc
 
@@ -298,7 +301,7 @@ def migrate_old_config():
         wan_interface=old_data.get("wan_interface", "Wi-Fi"),
         dhcp_range_start=old_data.get("dhcp_range_start", "192.168.10.100"),
         dhcp_range_end=old_data.get("dhcp_range_end", "192.168.10.200"),
-        dns_server=old_data.get("dns_server", "local"),
+        dns_server=old_data.get("dns_server", "1.1.1.1"),
         auto_rotate_minutes=old_data.get("auto_rotate_minutes", 0),
         bypass_cidrs=old_data.get("bypass_domains", [
             "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"

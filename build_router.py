@@ -189,7 +189,7 @@ def _make_zip():
             zf.write(DIST_UPDATER, UPDATER_NAME)
 
         if _IS_WIN:
-            for f in ("setup_windows.bat", "setup_windows.ps1"):
+            for f in ("setup_windows.bat", "setup_windows.ps1", "mihomo.exe", "wintun.dll", "geoip.metadb"):
                 if os.path.exists(f):
                     zf.write(f, f)
         elif _IS_LIN:

@@ -13,9 +13,13 @@ def get_mac_registry(request: Request):
     """Retrieve MACRegistry from FastAPI app state."""
     return getattr(request.app.state, "mac_registry", None)
 
+def get_clash_manager(request: Request):
+    """Retrieve ClashManager from FastAPI app state."""
+    return getattr(request.app.state, "clash_manager", None) or getattr(request.app.state, "singbox_manager", None)
+
 def get_singbox_manager(request: Request):
-    """Retrieve SingBoxManager from FastAPI app state."""
-    return getattr(request.app.state, "singbox_manager", None)
+    """Retrieve ClashManager/SingBoxManager from FastAPI app state (alias for backward compatibility)."""
+    return get_clash_manager(request)
 
 def get_dhcp_server(request: Request):
     """Retrieve DHCPServer from FastAPI app state."""
