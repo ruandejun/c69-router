@@ -214,6 +214,80 @@ def setup_firewall_rules():
 
 # ─── WAN Interface Detection ────────────────────────────
 
+
+def _test_interface_connectivity(interface_name: str, timeout_sec: int = 3) -> bool:
+    """Kiểm tra thực tế xem interface có internet thật không bằng TCP connect.
+
+    Gửi TCP SYN tới 1.1.1.1:443 qua interface chỉ định. Nếu connect thành công
+    trong timeout_sec giây → interface thực sự có internet, không phải chỉ có IP/route.
+
+    Dùng PowerShell Test-NetConnection vì Python socket không bind được theo
+    interface name trên Windows (chỉ bind được IP). PowerShell can bind theo
+    interface natively.
+    """
+    if platform.system() != "Windows" or not interface_name:
+        return True  # Non-Windows: assume OK
+
+    try:
+        # Lấy IP thực của interface để bind socket
+        ps = (
+            f"$ip = (Get-NetIPAddress -InterfaceAlias '{interface_name}' -AddressFamily IPv4 -EA SilentlyContinue "
+            "| Where-Object { -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) } "
+            "| Select-Object -First 1 -ExpandProperty IPAddress); "
+            "if (-not $ip) { Write-Output 'NO_IP'; exit }; "
+            "try { "
+            "  $tcp = New-Object System.Net.Sockets.TcpClient; "
+            "  $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($ip), 0); "
+            "  $tcp.Client.Bind($ep); "
+            f"  $ar = $tcp.BeginConnect('1.1.1.1', 443, $null, $null); "
+            f"  $ok = $ar.AsyncWaitHandle.WaitOne({timeout_sec * 1000}); "
+            "  if ($ok -and $tcp.Connected) { Write-Output 'OK' } else { Write-Output 'TIMEOUT' }; "
+            "  $tcp.Close() "
+            "} catch { Write-Output \"FAIL:$($_.Exception.Message)\" }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=timeout_sec + 5
+        )
+        out = result.stdout.strip()
+        if out == "OK":
+            logger.debug(f"[Network] Connectivity test OK: '{interface_name}' -> 1.1.1.1:443")
+            return True
+        else:
+            logger.info(f"[Network] Connectivity test FAILED: '{interface_name}' -> {out}")
+            return False
+    except Exception as e:
+        logger.debug(f"[Network] Connectivity test error for '{interface_name}': {e}")
+        return False
+
+
+def _check_media_connect_state(interface_name: str) -> str:
+    """Kiểm tra MediaConnectState thực tế của adapter.
+
+    Returns: '1' (Connected), '0' (Disconnected), '2' (Unknown), '' (error)
+    Khác với Status=='Up': MediaConnectState kiểm tra physical link layer,
+    ví dụ cáp Ethernet thực sự có tín hiệu hay chưa.
+    """
+    if platform.system() != "Windows" or not interface_name:
+        return "1"  # assume connected
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-NetAdapter -Name '{interface_name}' -EA SilentlyContinue).MediaConnectionState"],
+            capture_output=True, text=True, timeout=5
+        )
+        state = r.stdout.strip()
+        # Windows returns: 1=Connected, 0=Disconnected, 2=Unknown
+        # Or localized strings: 'Connected', 'Disconnected'
+        if state in ('1', 'Connected'):
+            return '1'
+        elif state in ('0', 'Disconnected', '2', 'Unknown'):
+            return '0'
+        return state
+    except Exception:
+        return ''
+
+
 def detect_wan_interface() -> str:
     """Auto-detect WAN interface - uu tien Ethernet (802.3) > WiFi.
 
@@ -258,9 +332,45 @@ def detect_wan_interface() -> str:
         lines = [l.strip() for l in result.stdout.strip().splitlines() if '|' in l]
 
         if not lines:
-            # Fallback to Ethernet if any is Up
-            logger.warning("[Network] No default route found with UP adapter, falling back to 'Ethernet'")
-            return "Ethernet"
+            # Không có default route → scan adapter đang Up có IPv4 thật
+            logger.warning("[Network] No default route found, scanning for first Up adapter with real IPv4...")
+            try:
+                ps_fallback = (
+                    "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and "
+                    "$_.InterfaceDescription -notlike '*Wintun*' -and "
+                    "$_.InterfaceDescription -notlike '*Hyper-V*' -and "
+                    "$_.InterfaceDescription -notlike '*VMware*' -and "
+                    "$_.InterfaceDescription -notlike '*Loopback*' -and "
+                    "$_.InterfaceDescription -notlike '*Bluetooth*' -and "
+                    "$_.InterfaceDescription -notlike '*Wi-Fi Direct*' "
+                    "} | ForEach-Object { "
+                    "  $ip = Get-NetIPAddress -InterfaceAlias $_.Name -AddressFamily IPv4 -EA SilentlyContinue | "
+                    "    Where-Object { -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) }; "
+                    "  if ($ip) { Write-Output \"$($_.Name)|$($_.PhysicalMediaType)\" } "
+                    "}"
+                )
+                fb_res = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_fallback],
+                    capture_output=True, text=True, timeout=8
+                )
+                fb_lines = [l.strip() for l in fb_res.stdout.strip().splitlines() if '|' in l]
+                # Ưu tiên Ethernet > WiFi trong fallback
+                fb_eth, fb_wifi = [], []
+                for fl in fb_lines:
+                    fp = fl.split('|')
+                    nm, mt = fp[0], fp[1].lower() if len(fp) > 1 else ''
+                    if '802.3' in mt or 'ethernet' in mt:
+                        fb_eth.append(nm)
+                    elif 'wifi' in mt or '802.11' in mt or 'nativewifi' in mt:
+                        fb_wifi.append(nm)
+                for lst in [fb_eth, fb_wifi]:
+                    if lst:
+                        logger.info(f"[Network] Fallback WAN: '{lst[0]}' (no default route but Up with IPv4)")
+                        return lst[0]
+            except Exception:
+                pass
+            logger.warning("[Network] No Up adapter found at all, using 'Wi-Fi' as last resort")
+            return "Wi-Fi"
 
         ethernet_candidates = []  # 802.3
         wifi_candidates = []      # NativeWifi / 802.11
@@ -284,11 +394,22 @@ def detect_wan_interface() -> str:
                 other_candidates.append((metric, name))
 
         # Chon theo priority: Ethernet > WiFi > other, trong cung loai chon metric thap nhat
+        # QUAN TRONG: verify connectivity that su — khong chi check route/Up
         for candidates in [ethernet_candidates, wifi_candidates, other_candidates]:
             if candidates:
-                metric_val, chosen = sorted(candidates)[0]  # metric thap nhat
-                logger.info(f"[Network] Auto-detected WAN: '{chosen}'")
-                return chosen
+                for metric_val, chosen in sorted(candidates):
+                    if _test_interface_connectivity(chosen, timeout_sec=3):
+                        logger.info(f"[Network] Auto-detected WAN: '{chosen}' (connectivity verified)")
+                        return chosen
+                    else:
+                        logger.warning(f"[Network] WAN candidate '{chosen}' has route but NO real internet — skipping")
+
+        # Neu khong candidate nao co internet that, chon metric thap nhat (best effort)
+        all_candidates = sorted(ethernet_candidates + wifi_candidates + other_candidates)
+        if all_candidates:
+            _, fallback = all_candidates[0]
+            logger.warning(f"[Network] No candidate has verified internet — using '{fallback}' (best metric, unverified)")
+            return fallback
 
     except Exception as e:
         logger.warning(f"[Network] detect_wan_interface error: {e}")
@@ -416,8 +537,24 @@ def smart_detect_lan(exclude_interface: str = "") -> tuple:
     except Exception as e:
         logger.warning(f"[Network] smart_detect_lan error: {e}")
 
-    logger.warning("[Network] No suitable LAN interface found, using fallback 'Ethernet 3'")
-    return ("Ethernet 3", False)
+    # FALLBACK: Không tìm thấy LAN card nào Up
+    # Thay vì hardcode "Ethernet 3", check xem WAN có phải WiFi không → trigger Tier 4 hotspot
+    if exclude_interface:
+        try:
+            wan_media = _get_adapter_media_type(exclude_interface)
+            wan_is_wifi = ('wifi' in wan_media.lower() or '802.11' in wan_media.lower()
+                           or 'nativewifi' in wan_media.lower())
+            if wan_is_wifi:
+                logger.info(
+                    f"[Network] Smart LAN detect FALLBACK → Tier4: WAN '{exclude_interface}' is WiFi "
+                    f"→ same card can host hotspot (no physical LAN port detected)"
+                )
+                return (exclude_interface, True)  # needs_hotspot=True
+        except Exception:
+            pass
+
+    logger.warning("[Network] No suitable LAN interface found and WAN is not WiFi — returning empty (degraded mode)")
+    return ("", False)
 
 
 def _get_adapter_media_type(adapter_name: str) -> str:
@@ -438,7 +575,12 @@ def _get_adapter_media_type(adapter_name: str) -> str:
 
 def is_lan_interface_valid(interface_name: str, wan_interface: str = "",
                            allow_wan_hotspot: bool = False) -> bool:
-    """Kiem tra LAN interface trong config con ton tai, dang UP, khong trung WAN.
+    """Kiem tra LAN interface con ton tai, co cable/link that su, khong trung WAN.
+
+    2-layer verification:
+    1. Adapter ton tai va Status == 'Up'
+    2. MediaConnectState == 'Connected' (cable that su cam vao, co link signal)
+       Tranh truong hop adapter 'Up' nhung cable bi rut hoac port loi.
 
     allow_wan_hotspot=True: khi wifi_hotspot_enabled=True va lan=wan la VALID
     (Tier 4 hotspot mode — sau khi hotspot bat se update sang virtual adapter).
@@ -454,39 +596,80 @@ def is_lan_interface_valid(interface_name: str, wan_interface: str = "",
         return False
 
     try:
+        # Check ca Status va MediaConnectState trong 1 lenh
+        ps = (
+            f"$a = Get-NetAdapter -Name '{interface_name}' -EA SilentlyContinue; "
+            f"if (-not $a) {{ Write-Output 'NOT_FOUND' }} "
+            f"elseif ($a.Status -ne 'Up') {{ Write-Output \"DOWN:$($a.Status)\" }} "
+            f"elseif ($a.MediaConnectionState -and $a.MediaConnectionState -ne 'Connected' -and $a.MediaConnectionState -ne 1) {{ Write-Output \"NO_LINK:$($a.MediaConnectionState)\" }} "
+            f"else {{ Write-Output 'OK' }}"
+        )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             f"(Get-NetAdapter -Name '{interface_name}' -ErrorAction SilentlyContinue).Status"],
+            ["powershell", "-NoProfile", "-Command", ps],
             capture_output=True, text=True, timeout=5
         )
-        return result.stdout.strip() == "Up"
+        out = result.stdout.strip()
+        if out == 'OK':
+            return True
+        elif out.startswith('NO_LINK'):
+            logger.info(
+                f"[Network] LAN '{interface_name}' adapter Up but cable NOT connected "
+                f"(MediaConnectState={out.split(':',1)[1]}) — invalid"
+            )
+            return False
+        elif out.startswith('DOWN'):
+            logger.info(f"[Network] LAN '{interface_name}' is {out.split(':',1)[1]} — invalid")
+            return False
+        else:
+            logger.info(f"[Network] LAN '{interface_name}': {out}")
+            return False
     except Exception as e:
         logger.warning(f"[Network] Failed to verify LAN interface '{interface_name}': {e}")
         return True  # Khong xac minh duoc thi tin theo config, tranh false positive
 
 
 def is_wan_interface_valid(interface_name: str) -> bool:
-    """Kiểm tra interface có đang thực sự là đường ra internet không (adapter UP,
-    có IP IPv4 thật không phải APIPA, và có default route với NextHop thật).
+    """Kiểm tra interface có đang thực sự là đường ra internet không.
+
+    3-layer verification:
+    1. Adapter UP + có IP IPv4 thật (không APIPA)
+    2. Có default route với NextHop thật
+    3. TCP connect thực tế tới 1.1.1.1:443 (verify internet thật, không đoán mò)
     """
     if platform.system() != "Windows" or not interface_name:
         return True
 
     try:
+        # Layer 1+2: Check adapter Up, real IPv4, default route
         ps = (
             f"$a = Get-NetAdapter -Name '{interface_name}' -ErrorAction SilentlyContinue; "
-            f"if (-not $a -or $a.Status -ne 'Up') {{ Write-Output 'NO'; exit }}; "
+            f"if (-not $a -or $a.Status -ne 'Up') {{ Write-Output 'NO_UP'; exit }}; "
             f"$ip = Get-NetIPAddress -InterfaceAlias '{interface_name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {{ -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) }}; "
-            f"if (-not $ip) {{ Write-Output 'NO'; exit }}; "
+            f"if (-not $ip) {{ Write-Output 'NO_IP'; exit }}; "
             f"$r = Get-NetRoute -InterfaceAlias '{interface_name}' -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object {{ $_.NextHop -ne '0.0.0.0' }}; "
-            f"if (-not $r) {{ Write-Output 'NO'; exit }}; "
+            f"if (-not $r) {{ Write-Output 'NO_ROUTE'; exit }}; "
             f"Write-Output 'YES'"
         )
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps],
             capture_output=True, text=True, timeout=5
         )
-        return "YES" in result.stdout.strip()
+        basic_check = result.stdout.strip()
+        if "YES" not in basic_check:
+            logger.info(f"[Network] WAN '{interface_name}' basic check failed: {basic_check}")
+            return False
+
+        # Layer 3: TCP connectivity test — verify actual internet
+        has_internet = _test_interface_connectivity(interface_name, timeout_sec=4)
+        if not has_internet:
+            logger.warning(
+                f"[Network] WAN '{interface_name}' has route+IP but NO real internet "
+                f"(TCP 1.1.1.1:443 failed) — marking as INVALID"
+            )
+            return False
+
+        logger.debug(f"[Network] WAN '{interface_name}' fully verified (Up + IP + route + internet)")
+        return True
     except Exception as e:
         logger.warning(f"[Network] Failed to verify WAN interface '{interface_name}': {e}")
         return True
@@ -1145,30 +1328,27 @@ def setup_nat(wan_interface: str, lan_subnet: str = "192.168.10.0/24"):
 
 
 def remove_nat_for_singbox(lan_subnet: str = "192.168.10.0/24"):
-    """Xóa Windows NAT rule (GenRouterNAT) để sing-box nhận đúng source IP của phone.
+    """Xóa Windows NAT rule (GenRouterNAT) để Mihomo/sing-box nhận đúng source IP của phone.
 
-    Khi GenRouterNAT đang chạy, nó masquerade source IP phone (192.168.10.100)
-    thành TUN IP (172.19.0.1) TRƯỚC khi packet vào sing-box. Điều này khiến
-    source_ip_cidr rules không match được và proxy không hoạt động.
-
-    Sing-box với auto_detect_interface=True sẽ tự NAT ra WAN qua direct-out.
+    Khi GenRouterNAT đang chạy, nó masquerade source IP phone (192.168.10.11)
+    thành TUN IP (198.18.0.1) TRƯỚC khi packet vào Mihomo. Điều này khiến
+    SRC-IP-CIDR rules không match được và bị lọt ra IP gốc.
     """
     if platform.system() != "Windows":
         return
-    logger.info("[Network] Removing GenRouterNAT to allow sing-box source IP matching...")
+    logger.info("[Network] Removing GenRouterNAT to allow proxy source IP matching...")
     try:
+        ps_cmd = (
+            "$ErrorActionPreference = 'SilentlyContinue'; "
+            "$ConfirmPreference = 'None'; "
+            "Get-NetNat | Remove-NetNat; "
+            "Write-Host 'REMOVED_OK'"
+        )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "$nat = Get-NetNat -Name 'GenRouterNAT' -ErrorAction SilentlyContinue; "
-             "if ($nat) { Remove-NetNat -Name 'GenRouterNAT' -Confirm:$false -ErrorAction SilentlyContinue; "
-             "Write-Host 'Removed' } else { Write-Host 'NotFound' }"],
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
             capture_output=True, text=True, timeout=10
         )
-        out = result.stdout.strip()
-        if "Removed" in out:
-            logger.info("[Network] ✓ GenRouterNAT removed - sing-box will see original phone source IPs.")
-        else:
-            logger.info("[Network] GenRouterNAT not present (already removed or not created yet).")
+        logger.info(f"[Network] ✓ GenRouterNAT cleanup: {result.stdout.strip()}")
     except Exception as e:
         logger.warning(f"[Network] Failed to remove GenRouterNAT: {e}")
 
@@ -1180,14 +1360,16 @@ def restore_nat_for_singbox(wan_interface: str, lan_subnet: str = "192.168.10.0/
     """
     if platform.system() != "Windows" or not wan_interface:
         return
-
-    # HOTSPOT MODE: Windows ICS (icssvc) lo NAT cho 192.168.137.0/24.
-    # Goi setup_nat() o day se dung icssvc -> KILL HOTSPOT!
+    # Tránh conflict với Windows Mobile Hotspot (icssvc)
+    # icssvc và WinNAT cùng bind vào NAT stack → chạy song song sẽ phá nát hotspot
+    # và làm crash dịch vụ chia sẻ mạng của Windows.
+    # Khi hotspot đang bật, Windows tự quản lý NAT cho dải 192.168.137.x qua ICS,
+    # KHÔNG ĐƯỢC tạo thêm NetNat rule đè lên.
+    from app.config import load_config
     try:
-        from app.config import load_config
-        cfg = load_config()
-        if getattr(cfg, "wifi_hotspot_enabled", False):
-            logger.info("[Network] Hotspot mode active: skip restoring GenRouterNAT to keep Windows ICS alive.")
+        _cfg = load_config()
+        if getattr(_cfg, "wifi_hotspot_enabled", False):
+            logger.info("[Network] WiFi hotspot active — skipping restore_nat_for_singbox to protect icssvc.")
             return
     except Exception:
         pass
@@ -1235,11 +1417,8 @@ def setup_network(lan_interface: str = "Ethernet 3", wan_interface: str = "",
     if wan_interface:
         ensure_wan_forwarding_disabled(wan_interface=wan_interface)
     setup_firewall_rules()
-    adjust_lan_interface_metric(lan_interface)
-    if wan_interface:
-        setup_nat(wan_interface=wan_interface, lan_subnet=lan_subnet)
-    else:
-        logger.info("[Network] WAN interface not provided, skipping NAT setup (will be called later from main).")
+    # XÓA sạch mọi NetNat cũ để Mihomo TUN nhận diện đúng IP gốc của từng máy phone (không bị masquerade)
+    remove_nat_for_singbox(lan_subnet=lan_subnet)
     logger.info("[Network] Network setup complete.")
 
 

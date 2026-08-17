@@ -21,9 +21,15 @@ sing-box.pid
 # Build / PyInstaller artifacts
 build/
 dist/
-*.spec
+dist_output/
+release/
 *.exe
 *.dll
+geoip.metadb
+cache.db
+clash-config.yaml
+!c69-router.spec
+!c69update.spec
 
 # Binary & Config artifacts
 sing-box.exe
@@ -35,6 +41,7 @@ data/api_token.txt
 data/config.json
 data/mac_registry.json
 data/machine_id.txt
+data/mac_registry_test.json
 # Local environment template; real .env remains ignored
 .env.example
 

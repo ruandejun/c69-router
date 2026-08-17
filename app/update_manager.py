@@ -28,12 +28,12 @@ from typing import Optional, Callable
 from urllib.parse import urlparse
 
 from app.config import PROJECT_DIR
+from app.version import VERSION as CLIENT_VERSION, BUILD_DATE, BUILD_STRING
 
 logger = logging.getLogger(__name__)
 
-CLIENT_VERSION = "2.1.0"
-ROUTER_VERSION_URL = "https://c69.us/api/router-version/"
-UPDATE_ALLOWED_HOSTS = {"c69.us", "www.c69.us", "cdn.c69.us"}
+ROUTER_VERSION_URL = "https://api.c69.us/api/router-version/"
+UPDATE_ALLOWED_HOSTS = {"c69.us", "www.c69.us", "cdn.c69.us", "api.c69.us"}
 EXE_NAME = "c69-router.exe"
 UPDATER_EXE_NAME = "c69update.exe"
 
@@ -42,6 +42,8 @@ _state = {
     "checked": False,
     "available": False,
     "current_version": CLIENT_VERSION,
+    "build_date": BUILD_DATE,
+    "build_string": BUILD_STRING,
     "version": "",
     "download_url": "",
     "sha256": "",

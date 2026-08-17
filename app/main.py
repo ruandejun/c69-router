@@ -1025,8 +1025,9 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
     global _mac_registry, _singbox_manager, _dhcp_server
 
+    from app.version import VERSION, BUILD_DATE, BUILD_STRING
     logger.info("=" * 60)
-    logger.info("  GenRouter v2.0 — Starting up...")
+    logger.info(f"  GenRouter v{VERSION} (Build: {BUILD_DATE}) — Starting up...")
     logger.info("=" * 60)
 
     # 1. Migrate old config if exists
@@ -1164,7 +1165,7 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     config.wifi_hotspot_ssid = "C69-Router"
             if not getattr(config, "wifi_hotspot_password", None) or config.wifi_hotspot_password in ("c69router123", ""):
-                config.wifi_hotspot_password = secrets.token_urlsafe(12)[:16]
+                config.wifi_hotspot_password = "Matkhau123"
 
         save_config(config)
     else:
@@ -1354,12 +1355,10 @@ async def lifespan(app: FastAPI):
             f"Hotspot chua bat/virtual adapter chua san sang."
         )
         try:
-            from app.network_setup import setup_firewall_rules, download_binaries
+            from app.network_setup import setup_firewall_rules, download_binaries, remove_nat_for_singbox
             download_binaries()
             setup_firewall_rules()
-            # Chi setup NAT khong lien quan den LAN IP
-            setup_nat(wan_interface=config.wan_interface,
-                      lan_subnet=f"{config.lan_gateway_ip.rsplit('.', 1)[0]}.0/24")
+            remove_nat_for_singbox(f"{config.lan_gateway_ip.rsplit('.', 1)[0]}.0/24")
         except Exception as e:
             logger.warning(f"[Main] Partial network setup error (safe mode): {e}")
     else:
@@ -1590,7 +1589,7 @@ async def lifespan(app: FastAPI):
     if _dhcp_server:
         _dhcp_server.stop()
     if _singbox_manager:
-        _singbox_manager.stop()
+        _singbox_manager.stop(restore_nat=True)
     if _mac_registry:
         _mac_registry.save()
     # Dừng WiFi hotspot nếu đã start

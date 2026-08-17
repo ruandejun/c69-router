@@ -177,16 +177,33 @@ def make_package():
 
 def _make_zip():
     """Windows / Linux: create zip archive."""
+    # Check both dist/ and dist_output/
+    global DIST_EXE
+    if not os.path.exists(DIST_EXE) and os.path.exists(os.path.join("dist_output", EXE_NAME)):
+        DIST_EXE = os.path.join("dist_output", EXE_NAME)
+
     if not os.path.exists(DIST_EXE):
         print(f"ERROR: Binary not found at {DIST_EXE}")
         sys.exit(1)
+
+    # Sync to release folder
+    os.makedirs("release", exist_ok=True)
+    os.makedirs("dist", exist_ok=True)
+    os.makedirs("dist_output", exist_ok=True)
+    try:
+        shutil.copy2(DIST_EXE, os.path.join("dist", EXE_NAME))
+        shutil.copy2(DIST_EXE, os.path.join("dist_output", EXE_NAME))
+        shutil.copy2(DIST_EXE, os.path.join("release", "c69-router-v2.1.2.exe"))
+    except Exception as e:
+        print(f"  Notice copying exe: {e}")
 
     print(f"\n=== Zipping → {ZIP_PATH} ===")
     with zipfile.ZipFile(ZIP_PATH, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.write(DIST_EXE, EXE_NAME)
 
-        if os.path.exists(DIST_UPDATER):
-            zf.write(DIST_UPDATER, UPDATER_NAME)
+        updater_src = DIST_UPDATER if os.path.exists(DIST_UPDATER) else os.path.join("release", UPDATER_NAME)
+        if os.path.exists(updater_src):
+            zf.write(updater_src, UPDATER_NAME)
 
         if _IS_WIN:
             for f in ("setup_windows.bat", "setup_windows.ps1", "mihomo.exe", "wintun.dll", "geoip.metadb"):
@@ -195,6 +212,12 @@ def _make_zip():
         elif _IS_LIN:
             if os.path.exists("setup_linux.sh"):
                 zf.write("setup_linux.sh", "setup_linux.sh")
+
+    # Also copy zip to dist_output
+    try:
+        shutil.copy2(ZIP_PATH, os.path.join("dist_output", ZIP_KEY))
+    except Exception:
+        pass
 
     size_mb = os.path.getsize(ZIP_PATH) / 1024 / 1024
     print(f"=== Zip OK: {ZIP_PATH} ({size_mb:.1f} MB) ===")
@@ -312,10 +335,16 @@ def upload_to_r2(zip_path: str) -> str:
     )
     with open(zip_path, "rb") as package_file:
         sha256 = hashlib.sha256(package_file.read()).hexdigest()
+    try:
+        from app.version import VERSION as _app_ver
+    except Exception:
+        _app_ver = "2.1.2"
+    app_version = os.environ.get("C69_ROUTER_VERSION", "") or _app_ver
     manifest = {
-        "version": os.environ.get("C69_ROUTER_VERSION", ""),
+        "version": app_version,
         "download_url": f"{R2_PUBLIC_URL.rstrip('/')}/{ZIP_KEY}" if R2_PUBLIC_URL else "",
         "sha256": sha256,
+        "changelog": f"Cập nhật v{app_version}: Sửa lỗi NetNat masquerade IP, ẩn thiết bị AP Aruba, đổi tên nút Restart Router, hiển thị ngày giờ build."
     }
     if manifest["version"] and not re.fullmatch(r"\d+(?:\.\d+){1,3}", manifest["version"]):
         raise ValueError("C69_ROUTER_VERSION must be a semantic version such as 2.1.1")

@@ -7,10 +7,32 @@ c69-router.spec — Cross-platform PyInstaller spec
 """
 import sys
 import os
+import datetime
 
 _is_win = sys.platform == "win32"
 _is_mac = sys.platform == "darwin"
 _is_lin = not _is_win and not _is_mac
+
+# Auto-update app/version.py with exact build timestamp
+try:
+    v_path = os.path.join(os.path.abspath('.'), 'app', 'version.py')
+    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cur_ver = "2.1.2"
+    if os.path.exists(v_path):
+        with open(v_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('VERSION ='):
+                    cur_ver = line.split('=')[1].strip().strip('"\'')
+    with open(v_path, 'w', encoding='utf-8') as f:
+        f.write(f'"""GenRouter Version & Build Information — Auto-generated at build time"""\n\n'
+                f'VERSION = "{cur_ver}"\n'
+                f'BUILD_DATE = "{now_str}"\n'
+                f'BUILD_STRING = f"v{{VERSION}} (Build: {{BUILD_DATE}})"\n\n'
+                f'def get_version_info() -> dict:\n'
+                f'    return {{"version": VERSION, "build_date": BUILD_DATE, "build_string": BUILD_STRING}}\n')
+    print(f"Stamped GenRouter version v{cur_ver} (Build: {now_str}) into app/version.py")
+except Exception as e:
+    print(f"Version stamping notice: {e}")
 
 # Platform-specific hidden imports
 _platform_hidden = []

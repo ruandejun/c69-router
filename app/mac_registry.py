@@ -23,6 +23,24 @@ logger = logging.getLogger(__name__)
 
 REGISTRY_PATH = os.path.join(DATA_DIR, "mac_registry.json")
 
+ARUBA_AP_OUIS = (
+    "1C:28:AF", "00:0B:86", "D8:C7:C8", "94:F6:65", "20:A6:CD",
+    "F0:5C:19", "6C:F3:7F", "AC:A3:1E", "B4:5D:50", "40:E3:D6",
+    "84:D4:7E", "90:4C:81", "94:B4:0F", "A8:BD:27", "B0:4E:26",
+    "D4:B9:2F", "E0:07:1B", "00:1A:1E"
+)
+
+
+def is_aruba_or_ap_mac(mac: str, hostname: str = "") -> bool:
+    """Kiểm tra xem MAC hoặc Hostname có phải là Cục phát Aruba / Access Point không."""
+    mac_upper = (mac or "").upper().replace("-", ":")
+    if any(mac_upper.startswith(oui) for oui in ARUBA_AP_OUIS):
+        return True
+    host_lower = (hostname or "").lower()
+    if any(k in host_lower for k in ("aruba", "instant", "iap-", "ap-", "cisco-ap", "unifi")):
+        return True
+    return False
+
 
 class MACRegistry:
     """Thread-safe MAC ↔ IP ↔ Proxy registry with persistent storage."""
@@ -280,6 +298,10 @@ class MACRegistry:
                 if old_mac in self._data:
                     self._data[old_mac]["ip"] = ""
 
+            is_ap = is_aruba_or_ap_mac(mac, name)
+            if is_ap and not name:
+                name = "Aruba Access Point (AP)"
+
             if mac in self._data:
                 old_ip = self._data[mac].get("ip", "")
                 if old_ip and old_ip != ip:
@@ -288,7 +310,13 @@ class MACRegistry:
                 current_name = self._data[mac].get("name", "")
                 self._data[mac]["ip"] = ip
                 self._data[mac]["last_seen"] = now
-                if name:
+                if is_ap:
+                    self._data[mac]["proxy_id"] = None
+                    self._data[mac]["proxy_decided"] = True
+                    self._data[mac]["is_ap"] = True
+                    if not current_name or self._is_auto_generated_name(current_name, old_ip or ip):
+                        self._data[mac]["name"] = name or "Aruba Access Point (AP)"
+                elif name:
                     # old_ip: IP cũ (trước update) để match pattern "Device {old_ip}"
                     # Nếu không có old_ip (thiết bị lần đầu có IP), dùng IP mới
                     _check_ip = old_ip or ip
@@ -306,7 +334,8 @@ class MACRegistry:
                     "ip": ip,
                     "name": name or f"Device {ip}",
                     "proxy_id": None,
-                    "proxy_decided": False,
+                    "proxy_decided": is_ap,
+                    "is_ap": is_ap,
                     "first_seen": now,
                     "last_seen": now,
                 }
@@ -328,6 +357,12 @@ class MACRegistry:
         mac = mac.upper()
         with self._lock:
             if mac in self._data:
+                if (is_aruba_or_ap_mac(mac) or self._data[mac].get("is_ap")) and proxy_id:
+                    logger.warning(f"[MACRegistry] Device {mac} là Aruba AP — bắt buộc đi DIRECT, không gán proxy.")
+                    self._data[mac]["proxy_id"] = None
+                    self._data[mac]["proxy_decided"] = True
+                    self.save()
+                    return
                 self._data[mac]["proxy_id"] = proxy_id
                 self._data[mac]["proxy_decided"] = True
                 self.save()
@@ -354,11 +389,13 @@ class MACRegistry:
 
     # ─── Device Queries ──────────────────────────────────
 
-    def get_all_devices(self) -> List[DeviceConfig]:
-        """Trả về tất cả devices dạng DeviceConfig."""
+    def get_all_devices(self, include_infrastructure: bool = False) -> List[DeviceConfig]:
+        """Trả về tất cả devices dạng DeviceConfig. Mặc định ẩn thiết bị hạ tầng (Aruba AP) để UI không bị nhầm."""
         with self._lock:
             devices = []
             for mac, info in self._data.items():
+                if not include_infrastructure and (is_aruba_or_ap_mac(mac, info.get("name", "")) or info.get("is_ap")):
+                    continue
                 devices.append(DeviceConfig(
                     mac=mac,
                     ip=info.get("ip", ""),
@@ -438,9 +475,12 @@ class MACRegistry:
             self.save()
 
     def get_device_count(self) -> int:
-        """Tổng số devices."""
+        """Tổng số devices thực tế (không tính Aruba AP)."""
         with self._lock:
-            return len(self._data)
+            return sum(
+                1 for mac, info in self._data.items()
+                if not (is_aruba_or_ap_mac(mac, info.get("name", "")) or info.get("is_ap"))
+            )
 
     def get_all_ips(self) -> List[str]:
         """Lấy tất cả IP đang cấp."""

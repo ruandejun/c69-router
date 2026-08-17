@@ -133,7 +133,11 @@ def get_status(
         _nat_cache_ts = now_ts
     nat_info = _nat_cache
 
+    from app.version import VERSION, BUILD_DATE, BUILD_STRING
     return {
+        "version": VERSION,
+        "build_date": BUILD_DATE,
+        "build_string": BUILD_STRING,
         "lan_interface": config.lan_interface,
         "lan_gateway_ip": config.lan_gateway_ip,
         "wan_interface": config.wan_interface,
@@ -159,7 +163,11 @@ def get_status(
 
 @router.get("/system/stats")
 def get_system_stats():
+    from app.version import VERSION, BUILD_DATE, BUILD_STRING
     stats = {
+        "version": VERSION,
+        "build_date": BUILD_DATE,
+        "build_string": BUILD_STRING,
         "cpu_usage": 0.0,
         "mem_usage": 0.0,
         "uptime": "Unknown",

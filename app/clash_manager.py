@@ -118,7 +118,7 @@ class ClashManager:
     def generate_config(self) -> bool:
         """Sinh file cấu hình clash-config.yaml chuẩn OpenClash."""
         config = self._config
-        devices = self._registry.get_all_devices() if self._registry else []
+        devices = self._registry.get_all_devices(include_infrastructure=True) if self._registry else []
 
         # 1. Xác định card WAN và Subnets
         actual_wan = config.wan_interface or detect_wan_interface()
@@ -137,11 +137,12 @@ class ClashManager:
         # Detect WAN host IP cụ thể (e.g. 192.168.1.68) để exclude khỏi TUN.
         # QUAN TRỌNG: thiếu /32 này là nguyên nhân gây loopback traffic loop!
         wan_host_ip = _detect_wan_host_ip(actual_wan)
+        lan_subnet = f"{config.lan_gateway_ip.rsplit('.', 1)[0]}.0/24"
         exclude_addresses = [
             "127.0.0.0/8", "172.19.0.0/30",
-            f"{config.lan_gateway_ip}/32",
-            "224.0.0.0/4", "255.255.255.255/32",
-            "1.1.1.1/32", "1.0.0.1/32", "8.8.8.8/32", "8.8.4.4/32", "9.9.9.9/32"
+            lan_subnet,
+            "192.168.137.0/24",
+            "224.0.0.0/4", "255.255.255.255/32"
         ]
         if wan_subnet and wan_subnet not in exclude_addresses:
             exclude_addresses.append(wan_subnet)
@@ -151,6 +152,27 @@ class ClashManager:
             if wan_host_cidr not in exclude_addresses:
                 exclude_addresses.append(wan_host_cidr)
             logger.info(f"[Clash] WAN host IP excluded from TUN: {wan_host_cidr}")
+
+        # FIX: Exclude WAN gateway IP — nếu thiếu gateway, host PC không resolve
+        # route tới internet khi auto-route override default route.
+        try:
+            _gw_ps = (
+                f"$r = Get-NetRoute -InterfaceAlias '{actual_wan}' -DestinationPrefix '0.0.0.0/0' "
+                "-ErrorAction SilentlyContinue | Where-Object {$_.NextHop -ne '0.0.0.0'} | "
+                "Select-Object -First 1; if ($r) { $r.NextHop }"
+            )
+            _gw_res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", _gw_ps],
+                capture_output=True, text=True, timeout=5
+            )
+            _wan_gw = _gw_res.stdout.strip()
+            if _wan_gw:
+                _gw_cidr = f"{_wan_gw}/32"
+                if _gw_cidr not in exclude_addresses:
+                    exclude_addresses.append(_gw_cidr)
+                logger.info(f"[Clash] WAN gateway excluded from TUN: {_gw_cidr}")
+        except Exception:
+            pass
 
         # Exclude proxy IPs
         for proxy in config.proxies:
@@ -281,6 +303,14 @@ class ClashManager:
 
         # 4. Xây dựng Rules (SRC-IP-CIDR)
         rules: List[str] = []
+
+        # TỰ ĐỘNG BẢO VỆ ARUBA / ACCESS POINT: Luôn đi DIRECT 100% không bao giờ qua proxy
+        from app.mac_registry import is_aruba_or_ap_mac
+        for device in devices:
+            ip_clean = device.ip.strip() if device.ip else ""
+            if ip_clean and (is_aruba_or_ap_mac(device.mac, device.name)):
+                rules.append(f"SRC-IP-CIDR,{ip_clean}/32,DIRECT")
+
         # Whitelist IP -> DIRECT
         if block_direct:
             for ip in whitelist_ips:
@@ -291,6 +321,8 @@ class ClashManager:
         for device in devices:
             ip_clean = device.ip.strip() if device.ip else ""
             if not ip_clean or ip_clean in seen_rules:
+                continue
+            if is_aruba_or_ap_mac(device.mac, device.name):
                 continue
             seen_rules.add(ip_clean)
             rules.append(f"SRC-IP-CIDR,{ip_clean}/32,select_{ip_clean}")
@@ -314,10 +346,42 @@ class ClashManager:
         rules.append("MATCH,DIRECT")
 
         # Xác định danh sách interface LAN cần TUN bắt traffic (KHÔNG bao gồm WAN để bảo vệ Host PC)
-        lan_ifaces = [config.lan_interface or "Ethernet 3"]
-        for extra in ["Ethernet 4", "Local Area Connection* 10"]:
-            if extra not in lan_ifaces and extra != actual_wan:
-                lan_ifaces.append(extra)
+        # DYNAMIC: scan tất cả adapter Up (trừ WAN, TUN, Hyper-V, Bluetooth) thay vì hardcode
+        lan_ifaces = []
+        _primary_lan = config.lan_interface or ""
+        if _primary_lan and _primary_lan != actual_wan:
+            lan_ifaces.append(_primary_lan)
+
+        try:
+            _ps_scan = (
+                f"$wan = '{actual_wan}';"
+                "Get-NetAdapter | Where-Object {"
+                "  $_.Status -eq 'Up' -and"
+                "  $_.Name -ne $wan -and"
+                "  $_.InterfaceDescription -notlike '*Wintun*' -and"
+                "  $_.InterfaceDescription -notlike '*Meta Tunnel*' -and"
+                "  $_.InterfaceDescription -notlike '*Hyper-V*' -and"
+                "  $_.InterfaceDescription -notlike '*VMware*' -and"
+                "  $_.InterfaceDescription -notlike '*Loopback*' -and"
+                "  $_.InterfaceDescription -notlike '*Bluetooth*'"
+                "} | Select-Object -ExpandProperty Name"
+            )
+            _scan_res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", _ps_scan],
+                capture_output=True, text=True, timeout=5
+            )
+            for _iface_name in _scan_res.stdout.strip().splitlines():
+                _iface_name = _iface_name.strip()
+                if _iface_name and _iface_name not in lan_ifaces and _iface_name != actual_wan:
+                    lan_ifaces.append(_iface_name)
+        except Exception:
+            pass
+
+        # Nếu không tìm thấy gì, dùng primary LAN từ config
+        if not lan_ifaces:
+            lan_ifaces = [_primary_lan or "Ethernet 3"]
+
+        logger.info(f"[Clash] TUN include-interface (dynamic): {lan_ifaces} (WAN '{actual_wan}' EXCLUDED)")
 
         # 5. Hoàn thiện Clash YAML Config
         clash_yaml_data: Dict[str, Any] = {
@@ -342,7 +406,10 @@ class ClashManager:
                 "strict-route": False,
                 "endpoint-independent-nat": True,
                 "include-interface": lan_ifaces,
-                "dns-hijack": ["198.18.0.1:53", "tcp://198.18.0.1:53"],
+                # FIX: Exclude WAN interface khỏi TUN capture — ngăn TUN bắt traffic
+                # trên card WAN gây mất internet host PC (đặc biệt trên dual-LAN).
+                "exclude-interface": [actual_wan],
+                "dns-hijack": ["any:53", "tcp://any:53"],
                 "route-exclude-address": exclude_addresses,
                 "inet4-route-exclude-address": exclude_addresses
             },
@@ -474,7 +541,13 @@ class ClashManager:
             return False
 
     def _remove_nat_after_tun_ready(self) -> None:
-        """Gỡ NAT SAU KHI TUN đã ready — tránh gap mất mạng giữa lúc NAT bị gỡ và TUN chưa lên."""
+        """Gỡ NAT SAU KHI TUN route thực sự active — tránh gap mất mạng.
+
+        FIX: Trước đây gỡ NAT ngay khi Mihomo start, nhưng WinTUN driver cần
+        vài giây để tạo adapter + inject routes. Trong khoảng đó NAT đã bị gỡ
+        mà TUN chưa lên → LAN devices mất internet hoàn toàn.
+        Giờ chờ TUN adapter Up + có route thật trước khi gỡ NAT.
+        """
         _hotspot_mode = getattr(self._config, "wifi_hotspot_enabled", False)
         if not _hotspot_mode:
             _lan_subnet = "192.168.10.0/24"
@@ -482,8 +555,33 @@ class ClashManager:
                 _lan_subnet = str(ipaddress.ip_interface(f"{self._config.lan_gateway_ip}/24").network)
             except Exception:
                 pass
+
+            # Chờ TUN adapter thực sự Up và có route trước khi gỡ NAT
+            _tun_ready = False
+            for _attempt in range(20):  # Max 20 x 0.5s = 10s
+                try:
+                    _chk = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         "$a = Get-NetAdapter -Name 'GenRouterTUN' -EA SilentlyContinue; "
+                         "if ($a -and $a.Status -eq 'Up') { "
+                         "  $r = Get-NetRoute -InterfaceAlias 'GenRouterTUN' -EA SilentlyContinue; "
+                         "  if ($r) { Write-Output 'READY' } else { Write-Output 'NO_ROUTE' } "
+                         "} else { Write-Output 'NOT_UP' }"],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    if 'READY' in _chk.stdout:
+                        _tun_ready = True
+                        logger.info(f"[Clash] TUN adapter verified READY after {_attempt * 0.5:.1f}s")
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+            if not _tun_ready:
+                logger.warning("[Clash] TUN not ready after 10s — removing NAT anyway (risk of traffic gap)")
+
             remove_nat_for_singbox(_lan_subnet)
-            logger.info("[Clash] NAT removed AFTER TUN verified ready — no traffic gap.")
+            logger.info(f"[Clash] NAT removed {'AFTER TUN verified ready' if _tun_ready else 'WITHOUT TUN verification'} — {'no' if _tun_ready else 'possible'} traffic gap.")
 
     def _fix_tun_metric(self) -> None:
         """Đảm bảo card TUN (GenRouterTUN) luôn có metric cao (500) và DNS luôn rỗng (EMPTY).
@@ -495,14 +593,22 @@ class ClashManager:
 
         def _clean_loop():
             tun_name = "GenRouterTUN"
-            lan_name = getattr(self._config, "lan_interface", "Ethernet 3") or "Ethernet 3"
+            lan_name = getattr(self._config, "lan_interface", "") or ""
             wan_name = getattr(self._config, "wan_interface", "") or detect_wan_interface()
 
-            # Xây danh sách interface cần xóa DNS — CHỈ TUN + LAN, KHÔNG BAO GIỜ WAN
-            clean_targets = {tun_name, lan_name}
-            clean_targets.discard(wan_name)  # BẢO VỆ WAN
+            # FIX: Xây danh sách interface cần xóa DNS — CHỈ TUN, KHÔNG LAN nếu LAN==WAN
+            # Trên dual-LAN machine, lan_name có thể là card Ethernet thật → nếu xóa DNS
+            # trên nó trong khi nó cũng là WAN → mất DNS host PC ngay.
+            clean_targets = set()
+            if tun_name:
+                clean_targets.add(tun_name)
+            if lan_name and lan_name != wan_name:
+                clean_targets.add(lan_name)
+            # BẢO VỆ WAN: loại bỏ triệt để, kiểm tra cả tên lẫn alias
+            if wan_name:
+                clean_targets.discard(wan_name)
             if not clean_targets:
-                logger.warning("[Clash] DNS cleaner: no targets (LAN==WAN?), skipping.")
+                logger.warning("[Clash] DNS cleaner: no targets after WAN protection, skipping.")
                 return
 
             logger.info(f"[Clash] DNS cleaner targets: {clean_targets} (WAN '{wan_name}' PROTECTED)")
@@ -529,7 +635,7 @@ class ClashManager:
 
         threading.Thread(target=_clean_loop, daemon=True, name="tun-dns-cleaner").start()
 
-    def stop(self):
+    def stop(self, restore_nat: bool = False):
         """Dừng tiến trình Mihomo và khôi phục sạch mạng."""
         self._stop_requested = True
         self._running_state = False
@@ -566,6 +672,16 @@ class ClashManager:
                     except Exception:
                         pass
                 self.process = None
+
+        if _IS_WINDOWS and restore_nat:
+            try:
+                wan = getattr(self._config, "wan_interface", "")
+                if wan and not getattr(self._config, "wifi_hotspot_enabled", False):
+                    lan_sub = f"{getattr(self._config, 'lan_gateway_ip', '192.168.10.1').rsplit('.', 1)[0]}.0/24"
+                    from app.network_setup import restore_nat_for_singbox
+                    restore_nat_for_singbox(wan_interface=wan, lan_subnet=lan_sub)
+            except Exception:
+                pass
 
         logger.info("[Clash] Mihomo stopped & GenRouterTUN cleaned.")
 
