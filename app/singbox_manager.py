@@ -432,7 +432,10 @@ class SingBoxManager:
             )
 
         # ── Outbounds ──
-        actual_wan = config.wan_interface or detect_wan_interface()
+        _lan_pfx = ""
+        if config.lan_gateway_ip:
+            _lan_pfx = config.lan_gateway_ip.rsplit(".", 1)[0] + "."
+        actual_wan = config.wan_interface or detect_wan_interface(exclude_lan_subnet=_lan_pfx)
         logger.info(f"[SingBox] Using WAN: {actual_wan} (config: {config.wan_interface})")
 
         outbounds = [
@@ -951,7 +954,9 @@ $proc.Id | Out-File -FilePath "{SINGBOX_PID_FILE}" -Encoding ascii -NoNewline
             return
 
         # Restore GenRouterNAT so direct-traffic devices can still access internet
-        wan_interface = self._config.wan_interface or detect_wan_interface()
+        _lan_gw = getattr(self._config, "lan_gateway_ip", "") or ""
+        _lan_pfx = _lan_gw.rsplit(".", 1)[0] + "." if _lan_gw else ""
+        wan_interface = self._config.wan_interface or detect_wan_interface(exclude_lan_subnet=_lan_pfx)
         lan_subnet = "192.168.10.0/24"
         try:
             ip_obj = __import__('ipaddress').ip_interface(f"{self._config.lan_gateway_ip}/24")

@@ -288,14 +288,20 @@ def _check_media_connect_state(interface_name: str) -> str:
         return ''
 
 
-def detect_wan_interface() -> str:
+def detect_wan_interface(exclude_lan_subnet: str = "") -> str:
     """Auto-detect WAN interface - uu tien Ethernet (802.3) > WiFi.
 
     Logic:
     1. Lay tat ca interfaces co default route (0.0.0.0/0) voi NextHop hop le
-    2. Uu tien: 802.3 Ethernet > NativeWifi > others
-    3. Trong cung loai: chon metric thap nhat
-    4. Fallback: metric thap nhat bat ke loai
+    2. Loai bo adapter co IP thuoc LAN subnet (vd 192.168.10.x) — day la LAN card (Aruba)
+    3. Uu tien: 802.3 Ethernet > NativeWifi > others
+    4. Trong cung loai: chon metric thap nhat + verify connectivity
+    5. Fallback: metric thap nhat bat ke loai
+
+    Args:
+        exclude_lan_subnet: Prefix subnet de loai tru (vd '192.168.10.').
+            Adapter co IP bat dau bang prefix nay se bi bo qua vi day la LAN card
+            (vd Ethernet noi voi Aruba AP), KHONG phai WAN.
     """
     if platform.system() != "Windows":
         try:
@@ -318,9 +324,9 @@ def detect_wan_interface() -> str:
             "foreach ($r in $routes) {"
             "  $a = Get-NetAdapter -Name $r.InterfaceAlias -ErrorAction SilentlyContinue;"
             "  if ($a -and $a.Status -eq 'Up') {"
-            "    $ip = Get-NetIPAddress -InterfaceAlias $r.InterfaceAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) };"
+            "    $ip = Get-NetIPAddress -InterfaceAlias $r.InterfaceAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) } | Select-Object -First 1;"
             "    if ($ip) {"
-            "      Write-Output \"$($r.InterfaceAlias)|$($a.PhysicalMediaType)|$($r.TotalMetric)\""
+            "      Write-Output \"$($r.InterfaceAlias)|$($a.PhysicalMediaType)|$($r.TotalMetric)|$($ip.IPAddress)\""
             "    }"
             "  }"
             "}"
@@ -346,7 +352,7 @@ def detect_wan_interface() -> str:
                     "} | ForEach-Object { "
                     "  $ip = Get-NetIPAddress -InterfaceAlias $_.Name -AddressFamily IPv4 -EA SilentlyContinue | "
                     "    Where-Object { -not ($_.IPAddress.StartsWith('169.254.') -or $_.IPAddress.StartsWith('127.')) }; "
-                    "  if ($ip) { Write-Output \"$($_.Name)|$($_.PhysicalMediaType)\" } "
+                    "  if ($ip) { Write-Output \"$($_.Name)|$($_.PhysicalMediaType)|$($ip.IPAddress)\" } "
                     "}"
                 )
                 fb_res = subprocess.run(
@@ -359,6 +365,11 @@ def detect_wan_interface() -> str:
                 for fl in fb_lines:
                     fp = fl.split('|')
                     nm, mt = fp[0], fp[1].lower() if len(fp) > 1 else ''
+                    fb_ip = fp[2] if len(fp) > 2 else ''
+                    # Loai tru adapter co IP thuoc LAN subnet
+                    if exclude_lan_subnet and fb_ip.startswith(exclude_lan_subnet):
+                        logger.info(f"[Network] Fallback: skipping '{nm}' (IP {fb_ip} is in LAN subnet '{exclude_lan_subnet}')")
+                        continue
                     if '802.3' in mt or 'ethernet' in mt:
                         fb_eth.append(nm)
                     elif 'wifi' in mt or '802.11' in mt or 'nativewifi' in mt:
@@ -381,10 +392,21 @@ def detect_wan_interface() -> str:
             if len(parts) < 3:
                 continue
             name, media_type, metric_str = parts[0], parts[1], parts[2]
+            candidate_ip = parts[3] if len(parts) > 3 else ''
             try:
                 metric = int(metric_str)
             except ValueError:
                 metric = 9999
+
+            # CRITICAL: Loai tru adapter co IP thuoc LAN subnet (vd 192.168.10.x)
+            # Day la card noi voi Aruba AP (LAN side), KHONG phai duong ra internet.
+            if exclude_lan_subnet and candidate_ip.startswith(exclude_lan_subnet):
+                logger.info(
+                    f"[Network] WAN candidate '{name}' EXCLUDED — "
+                    f"IP {candidate_ip} is in LAN subnet '{exclude_lan_subnet}' (Aruba LAN side)"
+                )
+                continue
+
             media_lower = media_type.lower()
             if '802.3' in media_lower or 'ethernet' in media_lower:
                 ethernet_candidates.append((metric, name))

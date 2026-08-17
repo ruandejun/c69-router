@@ -825,13 +825,44 @@ if ($script:needReboot) {
 """
 
 
-def _recover_wan_from_static_ip(wan_interface: str, lan_gateway_ip: str) -> bool:
-    """Phuc hoi WAN card neu bi gan IP tinh sai do bug cu (lan==wan ghi de IP DHCP)."""
+def _recover_wan_from_static_ip(wan_interface: str, lan_gateway_ip: str, lan_interface: str = "") -> bool:
+    """Phuc hoi WAN card neu bi gan IP tinh sai do bug cu (lan==wan ghi de IP DHCP).
+
+    SAFETY: KHONG recovery neu wan_interface trung voi lan_interface hien tai
+    — truong hop WiFi=WAN + Ethernet=LAN(Aruba), config cu ghi sai wan=Ethernet.
+    Recovery se reset DHCP tren card LAN → mat IP tinh 192.168.10.1 → DHCP server fail.
+    """
     import time
     if platform.system() != "Windows" or not wan_interface or not lan_gateway_ip:
         return False
 
+    # SAFETY GUARD: Neu WAN interface trung voi LAN interface → KHONG reset DHCP
+    # Day la truong hop config cu luu wan_interface sai (vd: "Ethernet" khi "Ethernet"
+    # thuc te la card noi Aruba AP). Reset DHCP se xoa IP tinh cua LAN card.
+    if lan_interface and wan_interface == lan_interface:
+        logger.info(
+            f"[Recovery] Skipping WAN recovery for '{wan_interface}' — "
+            f"it is currently the LAN interface (connected to Aruba AP)."
+        )
+        return False
+
     try:
+        # SAFETY CHECK 2: Neu adapter Disconnected/Down → KHONG recovery.
+        # Day la card khong cam cap hoac da tat — KHONG phai WAN card bi loi.
+        # Recovery se ipconfig /release + /renew — vo nghia voi adapter Disconnected.
+        r_status = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-NetAdapter -Name '{wan_interface}' -ErrorAction SilentlyContinue).Status"],
+            capture_output=True, text=True, timeout=5
+        )
+        adapter_status = r_status.stdout.strip()
+        if adapter_status != "Up":
+            logger.info(
+                f"[Recovery] Skipping WAN recovery for '{wan_interface}' — "
+                f"adapter status is '{adapter_status}' (not Up, likely unused port or cable disconnected)."
+            )
+            return False
+
         # Lay IP hien tai cua WAN card
         r = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
@@ -1103,9 +1134,11 @@ async def lifespan(app: FastAPI):
     # Dieu nay xay ra neu phien ban truoc cua c69-router da chay ensure_lan_ip_assigned
     # nham len WAN card khi hotspot Tier4 (detected_lan = wan). Bug nay da duoc fix nhung
     # may da chay phien ban loi thi can recovery nay de co internet lai.
+    # SAFETY: truyen lan_interface de tranh reset nham card LAN (Aruba scenario)
     _recover_wan_from_static_ip(
         wan_interface=config.wan_interface,
         lan_gateway_ip=config.lan_gateway_ip or "192.168.10.1",
+        lan_interface=config.lan_interface,
     )
 
     # 3.5 Xac minh WAN interface dang luu trong config con thuc su co internet khong
@@ -1114,7 +1147,12 @@ async def lifespan(app: FastAPI):
     # trong khi máy có card khác đang hoạt động tốt, khiến thiết bị kết nối vào có IP
     # nhưng không có internet).
     if not is_wan_interface_valid(config.wan_interface):
-        detected_wan = detect_wan_interface()
+        # Compute LAN subnet prefix (vd "192.168.10.") de loai tru LAN card khoi WAN candidates
+        _lan_prefix = ""
+        _gw = config.lan_gateway_ip or "192.168.10.1"
+        if _gw:
+            _lan_prefix = _gw.rsplit(".", 1)[0] + "."  # "192.168.10."
+        detected_wan = detect_wan_interface(exclude_lan_subnet=_lan_prefix)
         logger.warning(
             f"[Main] ⚠ WAN interface '{config.wan_interface}' không có route internet hợp lệ "
             f"— tự động chuyển sang '{detected_wan}'."

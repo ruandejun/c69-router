@@ -121,9 +121,12 @@ class ClashManager:
         devices = self._registry.get_all_devices(include_infrastructure=True) if self._registry else []
 
         # 1. Xác định card WAN và Subnets
-        actual_wan = config.wan_interface or detect_wan_interface()
+        _lan_prefix = ""
+        if config.lan_gateway_ip:
+            _lan_prefix = config.lan_gateway_ip.rsplit(".", 1)[0] + "."
+        actual_wan = config.wan_interface or detect_wan_interface(exclude_lan_subnet=_lan_prefix)
         if not is_wan_interface_valid(actual_wan):
-            actual_wan = detect_wan_interface()
+            actual_wan = detect_wan_interface(exclude_lan_subnet=_lan_prefix)
         logger.info(f"[Clash] Using WAN interface: '{actual_wan}'")
 
         lan_subnet = "192.168.10.0/24"
@@ -594,7 +597,9 @@ class ClashManager:
         def _clean_loop():
             tun_name = "GenRouterTUN"
             lan_name = getattr(self._config, "lan_interface", "") or ""
-            wan_name = getattr(self._config, "wan_interface", "") or detect_wan_interface()
+            _lan_gw = getattr(self._config, "lan_gateway_ip", "") or ""
+            _lan_pfx = _lan_gw.rsplit(".", 1)[0] + "." if _lan_gw else ""
+            wan_name = getattr(self._config, "wan_interface", "") or detect_wan_interface(exclude_lan_subnet=_lan_pfx)
 
             # FIX: Xây danh sách interface cần xóa DNS — CHỈ TUN, KHÔNG LAN nếu LAN==WAN
             # Trên dual-LAN machine, lan_name có thể là card Ethernet thật → nếu xóa DNS
