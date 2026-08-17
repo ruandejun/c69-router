@@ -156,6 +156,8 @@ def get_status(
         "singbox_running": singbox_manager.is_running if singbox_manager else False,
         "singbox_last_error": singbox_manager.last_error if singbox_manager else None,
         "dhcp_running": dhcp_server.is_running if dhcp_server else False,
+        "dhcp_ready": dhcp_server.is_fully_ready if dhcp_server else False,
+        "dhcp_status": dhcp_server.readiness_check() if dhcp_server else {"ready": False, "detail": "DHCP disabled or not initialized"},
         "nat_active": nat_info.get("ok", False),
         "nat_rules": nat_info.get("rules", []),
     }

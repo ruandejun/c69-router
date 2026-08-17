@@ -1531,7 +1531,46 @@ async def lifespan(app: FastAPI):
             on_lease_callback=_on_dhcp_lease,
             interface_name=config.lan_interface,
         )
-        _dhcp_server.start()
+
+        # Retry DHCP start toi da 3 lan (port 67 co the bi chiem tam thoi boi process cu)
+        _dhcp_max_retries = 3
+        _dhcp_started = False
+        for _dhcp_attempt in range(1, _dhcp_max_retries + 1):
+            _dhcp_started = _dhcp_server.start()
+            if _dhcp_started:
+                break
+            logger.warning(
+                f"[Main] DHCP start attempt {_dhcp_attempt}/{_dhcp_max_retries} failed: "
+                f"{_dhcp_server._startup_error}"
+            )
+            if _dhcp_attempt < _dhcp_max_retries:
+                import time as _t
+                _t.sleep(2)  # Cho process cu release port 67
+
+        if _dhcp_started:
+            # Readiness check — bao cao chi tiet
+            _dhcp_check = _dhcp_server.readiness_check()
+            if _dhcp_check["ready"]:
+                logger.info(f"[Main] ✅ DHCP Server fully ready: {_dhcp_check['detail']}")
+            elif _dhcp_check["sender_degraded"]:
+                logger.warning(f"[Main] ⚠ DHCP Server DEGRADED: {_dhcp_check['detail']}")
+                _broadcast_ws({
+                    "type": "dhcp_degraded",
+                    "detail": _dhcp_check["detail"],
+                    "timestamp": __import__('time').time(),
+                })
+            else:
+                logger.info(f"[Main] DHCP Server started: {_dhcp_check['detail']}")
+        else:
+            _err_detail = _dhcp_server._startup_error if _dhcp_server else "unknown"
+            _dhcp_server = None
+            _err = f"DHCP Server failed to start after {_dhcp_max_retries} attempts"
+            logger.error(f"[Main] ❌ {_err}: {_err_detail}")
+            _broadcast_ws({
+                "type": "dhcp_failed",
+                "detail": f"{_err}: {_err_detail}",
+                "timestamp": __import__('time').time(),
+            })
     elif _is_hotspot_mode:
         _dhcp_server = None
         logger.info(

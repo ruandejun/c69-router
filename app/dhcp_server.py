@@ -124,8 +124,17 @@ class DHCPServer:
         self._send_sock = None
         self._running = False
         self._thread = None
-        # Hàng đợi xử lý on_lease callback trong 1 thread nền RIÊNG, tách khỏi
-        # _listen_loop() — xem giải thích chi tiết ở _lease_worker_loop().
+        # Tracking DHCP readiness — not just "running" but "able to serve clients"
+        self._sender_ready = False       # True khi sender socket bind dung LAN IP
+        self._sender_degraded = False    # True khi sender = recv socket (fallback, co the bi TUN bat)
+        self._startup_error = ""         # Loi cuoi cung khi start
+        self._last_offer_time = 0.0      # Timestamp lan cuoi gui OFFER
+        self._last_ack_time = 0.0        # Timestamp lan cuoi gui ACK
+        self._total_offers = 0
+        self._total_acks = 0
+        self._total_naks = 0
+        # Hang doi xu ly on_lease callback trong 1 thread nen RIENG, tach khoi
+        # _listen_loop() — xem giai thich chi tiet o _lease_worker_loop().
         self._lease_queue: "queue.Queue" = queue.Queue()
         self._lease_worker_thread = None
         self.host_macs = self._get_host_macs()
@@ -199,11 +208,19 @@ class DHCPServer:
             logger.error(f"[DHCP] Failed to get interface index for {self.interface_name}: {e}")
         return None
 
-    def start(self):
-        """Start DHCP server on UDP port 67 with dual-socket setup."""
+    def start(self) -> bool:
+        """Start DHCP server on UDP port 67 with dual-socket setup.
+
+        Returns True if started successfully (at least receiver socket OK).
+        Sets self._sender_ready and self._sender_degraded for detailed status.
+        """
         if self._running:
             logger.warning("[DHCP] Server already running.")
-            return
+            return True
+
+        self._startup_error = ""
+        self._sender_ready = False
+        self._sender_degraded = False
 
         try:
             # 1. Receiver socket: binds to 0.0.0.0:67 to capture broadcasts from all interfaces
@@ -221,17 +238,23 @@ class DHCPServer:
                 self._send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 
                 # Force outgoing broadcasts/multicasts out of LAN interface using IP_MULTICAST_IF and IP_UNICAST_IF
+                _if_index_ok = False
                 try:
                     self._send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(self.server_ip))
                     ifIndex = self._get_interface_index()
                     if ifIndex:
                         # IP_UNICAST_IF = 31 on Windows. Forces all traffic out of specified interface index.
                         self._send_sock.setsockopt(socket.IPPROTO_IP, 31, struct.pack("!I", ifIndex))
+                        _if_index_ok = True
                         logger.info(f"[DHCP] Force interface binding to index {ifIndex} ({self.interface_name}) using IP_UNICAST_IF")
+                    else:
+                        logger.warning(f"[DHCP] Could not get interface index for '{self.interface_name}' — sender may route incorrectly")
                 except Exception as e_opt:
                     logger.warning(f"[DHCP] Failed to set interface-forcing socket options: {e_opt}")
 
                 self._send_sock.bind((self.server_ip, 67))
+                self._sender_ready = True
+                logger.info(f"[DHCP] ✅ Sender socket bound to {self.server_ip}:67 (interface_index={'OK' if _if_index_ok else 'MISSING'})")
             except Exception as e:
                 logger.warning(
                     f"[DHCP] Could not bind send socket to {self.server_ip}:67 ({e}). "
@@ -249,9 +272,13 @@ class DHCPServer:
                     except Exception:
                         pass
                     self._send_sock.bind((self.server_ip, 0))
+                    self._sender_ready = True
+                    logger.info(f"[DHCP] ✅ Sender socket bound to {self.server_ip}:0 (dynamic port, interface-forced)")
                 except Exception as e2:
-                    logger.error(f"[DHCP] Failed to bind send socket to {self.server_ip}:0 ({e2}). Using recv socket for replies.")
+                    logger.error(f"[DHCP] ⚠ Failed to bind send socket to {self.server_ip}:0 ({e2}). Using recv socket for replies — DEGRADED MODE.")
                     self._send_sock = self._sock
+                    self._sender_degraded = True
+                    # Degraded: reply di qua recv socket (bind 0.0.0.0) → co the bi TUN bat nham
 
             self._running = True
             self._thread = threading.Thread(target=self._listen_loop, daemon=True)
@@ -260,27 +287,38 @@ class DHCPServer:
                 target=self._lease_worker_loop, daemon=True, name="dhcp-lease-worker"
             )
             self._lease_worker_thread.start()
+
+            # Summary log
+            _mode = "DEGRADED" if self._sender_degraded else ("READY" if self._sender_ready else "PARTIAL")
             logger.info(
-                f"[DHCP] Server started | "
+                f"[DHCP] Server started [{_mode}] | "
                 f"Recv: 0.0.0.0:67 | Send: {self.server_ip}:67 | "
                 f"Pool: {self.pool_start}-{self.pool_end} | "
                 f"Gateway: {self.server_ip} | DNS: {self.dns_server}"
             )
+            if self._sender_degraded:
+                logger.warning(
+                    "[DHCP] ⚠ DEGRADED MODE: Sender socket = Receiver socket (bind 0.0.0.0). "
+                    "DHCP replies may be intercepted by TUN adapter when sing-box is running. "
+                    "Cause: LAN interface IP not ready or port conflict."
+                )
+            return True
         except PermissionError:
-            logger.error(
-                "[DHCP] Permission denied binding port 67. "
-                "Run as Administrator!"
-            )
+            self._startup_error = "Permission denied binding port 67. Run as Administrator!"
+            logger.error(f"[DHCP] {self._startup_error}")
+            return False
         except OSError as e:
             if "address already in use" in str(e).lower() or e.errno == 10048:
-                logger.warning(
-                    "[DHCP] Port 67 already in use. "
-                    "Another DHCP server may be running."
-                )
+                self._startup_error = f"Port 67 already in use — another DHCP server may be running."
+                logger.warning(f"[DHCP] {self._startup_error}")
             else:
-                logger.error(f"[DHCP] Socket error: {e}")
+                self._startup_error = f"Socket error: {e}"
+                logger.error(f"[DHCP] {self._startup_error}")
+            return False
         except Exception as e:
-            logger.error(f"[DHCP] Failed to start: {e}")
+            self._startup_error = f"Failed to start: {e}"
+            logger.error(f"[DHCP] {self._startup_error}")
+            return False
 
     def stop(self):
         """Stop DHCP server."""
@@ -308,6 +346,63 @@ class DHCPServer:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def is_fully_ready(self) -> bool:
+        """True khi DHCP server dang chay VA sender socket bind dung LAN IP.
+        False khi chua start, start fail, hoac dang o degraded mode."""
+        return self._running and self._sender_ready and not self._sender_degraded
+
+    def readiness_check(self) -> dict:
+        """Kiem tra trang thai san sang chi tiet cua DHCP server.
+
+        Returns dict voi:
+          - ready: bool — True neu DHCP co the phuc vu client binh thuong
+          - running: bool — Server thread dang chay
+          - sender_ready: bool — Sender socket bind dung LAN IP
+          - sender_degraded: bool — Sender = Receiver (co the bi TUN bat)
+          - startup_error: str — Loi khi start (neu co)
+          - stats: dict — So lieu OFFER/ACK/NAK
+          - detail: str — Mo ta trang thai hien tai
+        """
+        import time as _time
+        stats = {
+            "total_offers": self._total_offers,
+            "total_acks": self._total_acks,
+            "total_naks": self._total_naks,
+            "last_offer_ago": round(_time.time() - self._last_offer_time, 1) if self._last_offer_time else None,
+            "last_ack_ago": round(_time.time() - self._last_ack_time, 1) if self._last_ack_time else None,
+        }
+
+        if not self._running:
+            return {
+                "ready": False, "running": False,
+                "sender_ready": False, "sender_degraded": False,
+                "startup_error": self._startup_error or "Not started",
+                "stats": stats,
+                "detail": f"DHCP server not running. Error: {self._startup_error}" if self._startup_error else "DHCP server not started.",
+            }
+
+        if self._sender_degraded:
+            detail = (
+                f"DEGRADED: Sender socket = Receiver (bind 0.0.0.0). "
+                f"DHCP replies may be intercepted by TUN. "
+                f"LAN IP '{self.server_ip}' on '{self.interface_name}' may not be assigned yet."
+            )
+        elif self._sender_ready:
+            detail = f"READY: Sender bound to {self.server_ip}:67, interface '{self.interface_name}'."
+        else:
+            detail = "PARTIAL: Server running but sender socket status unknown."
+
+        return {
+            "ready": self._sender_ready and not self._sender_degraded,
+            "running": True,
+            "sender_ready": self._sender_ready,
+            "sender_degraded": self._sender_degraded,
+            "startup_error": self._startup_error,
+            "stats": stats,
+            "detail": detail,
+        }
 
     def _listen_loop(self):
         """Main listener loop with periodic LAN health checks."""
@@ -812,6 +907,18 @@ class DHCPServer:
 
             if not sent:
                 logger.error("[DHCP] Failed to send DHCP response via any method.")
+
+            # ── Stats tracking ──
+            import time as _time
+            if sent:
+                if msg_type == DHCP_OFFER:
+                    self._total_offers += 1
+                    self._last_offer_time = _time.time()
+                elif msg_type == DHCP_ACK:
+                    self._total_acks += 1
+                    self._last_ack_time = _time.time()
+                elif msg_type == DHCP_NAK:
+                    self._total_naks += 1
 
         except Exception as e:
             logger.error(f"[DHCP] Error sending response: {e}")
