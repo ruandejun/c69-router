@@ -1271,8 +1271,8 @@ async def lifespan(app: FastAPI):
             try:
                 from app.config import _generate_hotspot_ssid
                 config.wifi_hotspot_ssid = _generate_hotspot_ssid()
-                if not getattr(config, "wifi_hotspot_password", None) or config.wifi_hotspot_password in ("c69router123", "matkhau123"):
-                    config.wifi_hotspot_password = secrets.token_urlsafe(12)[:16]
+                if not getattr(config, "wifi_hotspot_password", None) or config.wifi_hotspot_password in ("c69router123", ""):
+                    config.wifi_hotspot_password = "Matkhau123"
                 save_config(config)
                 logger.info(f"[Main] Auto-migrated hotspot SSID to '{config.wifi_hotspot_ssid}'")
             except Exception as _ex:
@@ -1307,7 +1307,7 @@ async def lifespan(app: FastAPI):
             else:
                 # Hotspot chua chay hoac SSID khac, can setup fresh
                 ssid = getattr(config, "wifi_hotspot_ssid", "") or "c69-router"
-                pwd  = getattr(config, "wifi_hotspot_password", "c69router123") or "c69router123"
+                pwd  = getattr(config, "wifi_hotspot_password", "Matkhau123") or "Matkhau123"
                 ok = setup_hosted_network(ssid=ssid, password=pwd, wan_interface=config.wan_interface)
                 if ok:
                     _hotspot_was_started = True

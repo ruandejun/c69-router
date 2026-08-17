@@ -145,7 +145,7 @@ class AppConfig(BaseModel):
     # Virtual adapter được tạo ra sẽ tự động được dùng làm lan_interface.
     wifi_hotspot_enabled: bool = False
     wifi_hotspot_ssid: str = "C69-Router"
-    wifi_hotspot_password: str = Field(default_factory=lambda: secrets.token_urlsafe(12)[:16])
+    wifi_hotspot_password: str = "Matkhau123"
 
     # ── Data ──
     proxies: List[ProxyConfig] = Field(default_factory=list)

@@ -215,7 +215,7 @@ def restart_hotspot(config=Depends(get_config)):
         raise HTTPException(status_code=400, detail="wifi_hotspot_enabled=False trong config. Bật trước trong Settings.")
 
     ssid = getattr(config, "wifi_hotspot_ssid", "C69-Router") or "C69-Router"
-    pwd  = getattr(config, "wifi_hotspot_password", "c69router123") or "c69router123"
+    pwd  = getattr(config, "wifi_hotspot_password", "Matkhau123") or "Matkhau123"
 
     ok = setup_hosted_network(ssid=ssid, password=pwd)
     if not ok:
