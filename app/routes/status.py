@@ -18,6 +18,15 @@ from app.dependencies import get_config, get_mac_registry, get_singbox_manager, 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
+def _get_startup_warnings() -> list:
+    """Lay danh sach startup warnings tu main module."""
+    try:
+        from app.main import _startup_warnings
+        return _startup_warnings
+    except (ImportError, AttributeError):
+        return []
+
 # ── Ping scan cache (áp dụng debounce 5s để tránh spam batch_ping_check) ──
 _ping_cache: dict = {}          # ip → bool
 _ping_cache_ts: float = 0.0     # timestamp của lần scan gần nhất
@@ -160,6 +169,7 @@ def get_status(
         "dhcp_status": dhcp_server.readiness_check() if dhcp_server else {"ready": False, "detail": "DHCP disabled or not initialized"},
         "nat_active": nat_info.get("ok", False),
         "nat_rules": nat_info.get("rules", []),
+        "startup_warnings": _get_startup_warnings(),
     }
 
 

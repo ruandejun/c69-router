@@ -487,6 +487,47 @@ def _on_dhcp_lease(mac: str, ip: str, name: str, ip_changed: bool = True):
         "proxy_id": _mac_registry.get_proxy_for_mac(mac) if _mac_registry else None,
     })
 
+# ── Startup Warnings: thu thap loi startup de API /status tra ve ──
+_startup_warnings: list = []
+
+
+def _report_startup_issue(
+    component: str,
+    detail: str,
+    manual_fix: str = "",
+    level: str = "warning",
+):
+    """Bao cao loi startup: log + broadcast WS + luu vao _startup_warnings.
+
+    Args:
+        component: Ten component bi loi (vd "network_setup", "dhcp", "singbox")
+        detail: Mo ta loi
+        manual_fix: Huong dan fix thu cong (PowerShell commands)
+        level: "warning" hoac "error"
+    """
+    import time as _t
+    entry = {
+        "type": "startup_issue",
+        "component": component,
+        "level": level,
+        "detail": detail,
+        "manual_fix": manual_fix,
+        "timestamp": _t.time(),
+    }
+    _startup_warnings.append(entry)
+
+    # Log
+    if level == "error":
+        logger.error(f"[Startup] ❌ {component}: {detail}")
+    else:
+        logger.warning(f"[Startup] ⚠ {component}: {detail}")
+    if manual_fix:
+        for line in manual_fix.strip().splitlines():
+            logger.info(f"[Startup]   FIX: {line}")
+
+    # Broadcast WS
+    _broadcast_ws(entry)
+
 
 def _broadcast_ws(data: dict):
     """Broadcast message to all WebSocket clients."""
@@ -1310,6 +1351,17 @@ async def lifespan(app: FastAPI):
                 f"[Main] 🔴 Hotspot topology is NOT ready: {topology['reason']} "
                 "— skipping LAN/DNS/captive setup instead of using a stale wired adapter."
             )
+            _report_startup_issue(
+                component="hotspot",
+                detail=f"Hotspot topology NOT ready: {topology['reason']}. Router enters degraded mode — no NAT, DHCP, or proxy.",
+                manual_fix=(
+                    "1. Restart ICS: Restart-Service SharedAccess -Force\n"
+                    "2. Hoac bat Mobile Hotspot thu cong: Windows Settings > Network > Mobile Hotspot\n"
+                    "3. Hoac tat hotspot mode: trong data/config.json set \"wifi_hotspot_enabled\": false\n"
+                    "4. Restart c69-router"
+                ),
+                level="error",
+            )
 
     # 4. Setup network (LAN static IP, IP forwarding, firewall, binaries)
 
@@ -1385,6 +1437,17 @@ async def lifespan(app: FastAPI):
             logger.info("[Main] Hotspot mode: network setup done (NAT handled by Windows ICS).")
         except Exception as e:
             logger.warning(f"[Main] Hotspot network setup error: {e}")
+            _report_startup_issue(
+                component="hotspot_network",
+                detail=f"Hotspot network setup failed: {e}",
+                manual_fix=(
+                    "1. Chay PowerShell (Admin):\n"
+                    "   Set-NetIPInterface -Forwarding Enabled -InterfaceAlias '<lan_interface>'\n"
+                    "2. Firewall: New-NetFirewallRule -DisplayName 'GenRouter Allow LAN' -Direction Inbound -Action Allow\n"
+                    "3. Restart c69-router"
+                ),
+                level="warning",
+            )
     elif config.lan_interface == config.wan_interface:
 
         logger.warning(
@@ -1412,6 +1475,18 @@ async def lifespan(app: FastAPI):
             logger.error(f"[Main] Network setup error: {e}")
             from app.error_reporter import report_error
             report_error("Startup", f"Network setup error: {e}", level="critical", exc=e)
+            _report_startup_issue(
+                component="network_setup",
+                detail=f"Network setup failed: {e}. LAN interface may not have static IP, NAT may be missing.",
+                manual_fix=(
+                    f"Chay PowerShell (Admin):\n"
+                    f"1. New-NetIPAddress -InterfaceAlias '{config.lan_interface}' -IPAddress {config.lan_gateway_ip} -PrefixLength 24\n"
+                    f"2. Set-NetIPInterface -Forwarding Enabled -InterfaceAlias '{config.lan_interface}'\n"
+                    f"3. New-NetNat -Name GenRouterNAT -InternalIPInterfaceAddressPrefix {config.lan_gateway_ip.rsplit('.', 1)[0]}.0/24\n"
+                    f"4. Restart c69-router"
+                ),
+                level="error",
+            )
 
     # 4.0 TCP Stack Optimization — apply in background to avoid blocking startup
     # Optimize Windows TCP: Nagle off, ICWV=10, RSS, DCA, CTCP, ECN
@@ -1471,8 +1546,30 @@ async def lifespan(app: FastAPI):
                         f"[Main] Enforce IP that bai (can quyen Admin). "
                         f"Interface van la {actual_lan_ip}, tiep tuc voi config IP {config.lan_gateway_ip}."
                     )
+                    _report_startup_issue(
+                        component="lan_ip",
+                        detail=(
+                            f"LAN '{config.lan_interface}' dang co IP {actual_lan_ip}, "
+                            f"khong gan duoc {config.lan_gateway_ip}. DHCP se khong hoat dong dung."
+                        ),
+                        manual_fix=(
+                            f"Chay PowerShell (Admin):\n"
+                            f"New-NetIPAddress -InterfaceAlias '{config.lan_interface}' -IPAddress {config.lan_gateway_ip} -PrefixLength 24\n"
+                            f"Hoac: Network Settings > '{config.lan_interface}' > set static IP {config.lan_gateway_ip}, subnet 255.255.255.0"
+                        ),
+                        level="warning",
+                    )
             except Exception as _e:
                 logger.warning(f"[Main] Enforce IP error: {_e}. Tiep tuc voi config IP.")
+                _report_startup_issue(
+                    component="lan_ip",
+                    detail=f"LAN IP enforce error: {_e}",
+                    manual_fix=(
+                        f"Chay PowerShell (Admin):\n"
+                        f"New-NetIPAddress -InterfaceAlias '{config.lan_interface}' -IPAddress {config.lan_gateway_ip} -PrefixLength 24"
+                    ),
+                    level="warning",
+                )
 
 
     logger.info(f"[Main] LAN Gateway IP: {config.lan_gateway_ip}")
@@ -1605,6 +1702,18 @@ async def lifespan(app: FastAPI):
                 logger.warning(
                     f"[Main] ⚠ Mihomo chưa running sau {_sb_max_wait:.0f}s — tiếp tục startup."
                 )
+                _report_startup_issue(
+                    component="singbox",
+                    detail=f"Mihomo/sing-box chua running sau {_sb_max_wait:.0f}s. TUN proxy khong hoat dong — thiet bi co IP nhung proxy khong chay.",
+                    manual_fix=(
+                        "1. Check process: Get-Process mihomo* -ErrorAction SilentlyContinue\n"
+                        "2. Check TUN: Get-NetAdapter | Where-Object {$_.Name -like '*GenRouter*'}\n"
+                        "3. Check API: Test-NetConnection -ComputerName 127.0.0.1 -Port 9090\n"
+                        "4. Xem log: Get-Content data\\mihomo.log -Tail 50\n"
+                        "5. Kill zombie: Stop-Process -Name mihomo -Force; Restart c69-router"
+                    ),
+                    level="error",
+                )
                 break
             await asyncio.sleep(0.5)
         else:
@@ -1645,6 +1754,17 @@ async def lifespan(app: FastAPI):
             setup_captive_portproxy(config.lan_gateway_ip, active_port)
         except Exception as e:
             logger.error(f"[Main] Setup captive portproxy error: {e}")
+            _report_startup_issue(
+                component="captive_portal",
+                detail=f"Captive portal portproxy setup failed: {e}. Nhap {config.lan_gateway_ip} tren browser se khong mo duoc dashboard.",
+                manual_fix=(
+                    f"Chay PowerShell (Admin):\n"
+                    f"1. netsh interface portproxy reset\n"
+                    f"2. netsh interface portproxy add v4tov4 listenport=80 listenaddress={config.lan_gateway_ip} connectport=9000 connectaddress=127.0.0.1\n"
+                    f"3. Verify: netsh interface portproxy show all"
+                ),
+                level="warning",
+            )
 
     # 8. Start Auto-Rotate background loop
     asyncio.create_task(auto_rotate_loop(app))
