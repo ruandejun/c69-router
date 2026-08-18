@@ -108,7 +108,7 @@ class AppConfig(BaseModel):
     lan_gateway_ip: str = "192.168.10.1"
     lan_subnet_mask: str = "255.255.255.0"
     wan_interface: str = "Wi-Fi"
-    tun_interface: str = "genrouter-tun-9"
+    tun_interface: str = "GenRouterTUN"
 
     # ── DHCP Server ──
     dhcp_enabled: bool = True

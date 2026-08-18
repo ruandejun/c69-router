@@ -437,6 +437,11 @@ class ClashManager:
             "rules": rules
         }
 
+        # FIX: Sync config.tun_interface cho phần còn lại của app (main.py clear_interface_dns,
+        # optimize_tcp_stack, etc.) — trước đây chỉ singbox_manager làm việc này,
+        # clash_manager thì không → main.py gọi clear DNS với tên cũ "genrouter-tun-9" → miss hoàn toàn.
+        self._config.tun_interface = "GenRouterTUN"
+
         try:
             with open(CLASH_CONFIG, "w", encoding="utf-8") as f:
                 yaml.dump(clash_yaml_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -617,15 +622,17 @@ class ClashManager:
                 return
 
             logger.info(f"[Clash] DNS cleaner targets: {clean_targets} (WAN '{wan_name}' PROTECTED)")
+
+            # PHASE 1: Burst — xóa DNS nhanh 12 lần × 1s (đè Wintun gán DNS ngay sau khi TUN lên)
             for i in range(12):
+                if self._stop_requested:
+                    return
                 try:
-                    # TUN metric + unregister DNS
                     ps_cmd = (
                         f"$tun = '{tun_name}'; "
                         f"Set-NetIPInterface -InterfaceAlias $tun -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric 500 -ErrorAction SilentlyContinue; "
                         f"Set-DnsClient -InterfaceAlias $tun -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue; "
                     )
-                    # Xóa DNS CHỈ trên các target (TUN + LAN), KHÔNG phải WAN
                     for iface in clean_targets:
                         ps_cmd += (
                             f"Set-DnsClientServerAddress -InterfaceAlias '{iface}' -ResetServerAddresses -ErrorAction SilentlyContinue; "
@@ -636,7 +643,40 @@ class ClashManager:
                 except Exception:
                     pass
                 time.sleep(1.0)
-            logger.info(f"[Clash] DNS cleaner completed — {clean_targets} DNS EMPTY, WAN '{wan_name}' untouched.")
+            logger.info(f"[Clash] DNS cleaner burst phase done — {clean_targets} DNS EMPTY, WAN '{wan_name}' untouched.")
+
+            # PHASE 2: Persistent daemon — kiểm tra & xóa DNS mỗi 10s liên tục
+            # (Wintun/Mihomo có thể gán lại DNS bất cứ lúc nào, cần canh giữ liên tục)
+            _dns_check_cmd = (
+                f"(Get-DnsClientServerAddress -InterfaceAlias '{tun_name}' -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses -join ','"
+            )
+            while not self._stop_requested:
+                time.sleep(10.0)
+                if self._stop_requested:
+                    break
+                try:
+                    _chk = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", _dns_check_cmd],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    _dns_val = _chk.stdout.strip()
+                    if _dns_val:
+                        # DNS bị gán lại → xóa ngay
+                        logger.warning(f"[Clash] DNS re-appeared on TUN '{tun_name}': {_dns_val} — clearing again!")
+                        ps_cmd = (
+                            f"$tun = '{tun_name}'; "
+                            f"Set-NetIPInterface -InterfaceAlias $tun -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric 500 -ErrorAction SilentlyContinue; "
+                            f"Set-DnsClient -InterfaceAlias $tun -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue; "
+                        )
+                        for iface in clean_targets:
+                            ps_cmd += (
+                                f"Set-DnsClientServerAddress -InterfaceAlias '{iface}' -ResetServerAddresses -ErrorAction SilentlyContinue; "
+                                f"Set-DnsClientServerAddress -InterfaceAlias '{iface}' -ServerAddresses @() -ErrorAction SilentlyContinue; "
+                                f"netsh interface ipv4 delete dns name='{iface}' all 2>&1 | Out-Null; "
+                            )
+                        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=5)
+                except Exception:
+                    pass
 
         threading.Thread(target=_clean_loop, daemon=True, name="tun-dns-cleaner").start()
 

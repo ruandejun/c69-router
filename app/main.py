@@ -1644,27 +1644,45 @@ async def lifespan(app: FastAPI):
                 import time as _t
                 _t.sleep(2)  # Cho process cu release port 67
 
+        # ANSI color codes for console output
+        _GREEN = "\033[92m"
+        _YELLOW = "\033[93m"
+        _RED = "\033[91m"
+        _RESET = "\033[0m"
+        _BOLD = "\033[1m"
+
         if _dhcp_started:
             # Readiness check — bao cao chi tiet
             _dhcp_check = _dhcp_server.readiness_check()
             if _dhcp_check["ready"]:
-                logger.info("=" * 65)
-                logger.info("  🟢 DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ")
-                logger.info(f"  → Card LAN       : {config.lan_interface} (IP Gateway: {config.lan_gateway_ip})")
-                logger.info(f"  → Dải IP cấp phát: {config.dhcp_range_start} → {config.dhcp_range_end}")
-                logger.info(f"  → Trạng thái     : HOÀN TẤT (Sender socket bind {config.lan_gateway_ip}:67)")
-                logger.info("  → Thiết bị kết nối vào AP/Switch sẽ nhận IP ngay lập tức!")
-                logger.info("=" * 65)
+                _dhcp_msg = [
+                    f"{_BOLD}{_GREEN}" + "=" * 65,
+                    f"  ✅ DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ",
+                    f"  → Card LAN       : {config.lan_interface} (IP Gateway: {config.lan_gateway_ip})",
+                    f"  → Dải IP cấp phát: {config.dhcp_range_start} → {config.dhcp_range_end}",
+                    f"  → Trạng thái     : HOÀN TẤT (Sender socket bind {config.lan_gateway_ip}:67)",
+                    f"  → Thiết bị kết nối vào AP/Switch sẽ nhận IP ngay lập tức!",
+                    "=" * 65 + f"{_RESET}",
+                ]
+                for _line in _dhcp_msg:
+                    print(_line)
+                logger.info("  ✅ DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ")
+                logger.info(f"  → Card LAN: {config.lan_interface} | Dải: {config.dhcp_range_start} → {config.dhcp_range_end}")
                 _broadcast_ws({
                     "type": "dhcp_ready",
                     "detail": f"DHCP đã sẵn sàng cấp IP ({config.dhcp_range_start} → {config.dhcp_range_end}) trên '{config.lan_interface}'",
                     "timestamp": __import__('time').time(),
                 })
             elif _dhcp_check["sender_degraded"]:
-                logger.warning("=" * 65)
-                logger.warning("  🟡 DHCP SERVER ĐANG CHẠY Ở CHẾ ĐỘ CẢNH BÁO (DEGRADED)")
-                logger.warning(f"  → {_dhcp_check['detail']}")
-                logger.warning("=" * 65)
+                _warn_msg = [
+                    f"{_BOLD}{_YELLOW}" + "=" * 65,
+                    f"  ⚠️  DHCP SERVER ĐANG CHẠY Ở CHẾ ĐỘ CẢNH BÁO (DEGRADED)",
+                    f"  → {_dhcp_check['detail']}",
+                    "=" * 65 + f"{_RESET}",
+                ]
+                for _line in _warn_msg:
+                    print(_line)
+                logger.warning(f"[Main] DHCP DEGRADED: {_dhcp_check['detail']}")
                 _broadcast_ws({
                     "type": "dhcp_degraded",
                     "detail": _dhcp_check["detail"],
@@ -1676,9 +1694,14 @@ async def lifespan(app: FastAPI):
             _err_detail = _dhcp_server._startup_error if _dhcp_server else "unknown"
             _dhcp_server = None
             _err = f"DHCP Server failed to start after {_dhcp_max_retries} attempts"
-            logger.error("=" * 65)
-            logger.error(f"  🔴 LỖI KHỞI ĐỘNG DHCP SERVER: {_err_detail}")
-            logger.error("=" * 65)
+            _err_msg = [
+                f"{_BOLD}{_RED}" + "=" * 65,
+                f"  ❌ LỖI KHỞI ĐỘNG DHCP SERVER: {_err_detail}",
+                "=" * 65 + f"{_RESET}",
+            ]
+            for _line in _err_msg:
+                print(_line)
+            logger.error(f"[Main] DHCP FAILED: {_err_detail}")
             _broadcast_ws({
                 "type": "dhcp_failed",
                 "detail": f"{_err}: {_err_detail}",
@@ -1686,12 +1709,20 @@ async def lifespan(app: FastAPI):
             })
     elif _is_hotspot_mode:
         _dhcp_server = None
-        logger.info("=" * 65)
-        logger.info("  🟢 WIFI HOTSPOT ĐÃ SẴN SÀNG PHÁT IP (Windows ICS)")
-        logger.info(f"  → Tên Wi-Fi (SSID) : {config.wifi_hotspot_ssid}")
-        logger.info(f"  → Mật khẩu Hotspot : {config.wifi_hotspot_password}")
-        logger.info(f"  → Cấp phát IP      : Subnet 192.168.137.x tự động bởi Windows")
-        logger.info("=" * 65)
+        _GREEN = "\033[92m"
+        _RESET = "\033[0m"
+        _BOLD = "\033[1m"
+        _hs_msg = [
+            f"{_BOLD}{_GREEN}" + "=" * 65,
+            f"  ✅ WIFI HOTSPOT ĐÃ SẴN SÀNG PHÁT IP (Windows ICS)",
+            f"  → Tên Wi-Fi (SSID) : {config.wifi_hotspot_ssid}",
+            f"  → Mật khẩu Hotspot : {config.wifi_hotspot_password}",
+            f"  → Cấp phát IP      : Subnet 192.168.137.x tự động bởi Windows",
+            "=" * 65 + f"{_RESET}",
+        ]
+        for _line in _hs_msg:
+            print(_line)
+        logger.info(f"[Main] ✅ WIFI HOTSPOT ĐÃ SẴN SÀNG: SSID='{config.wifi_hotspot_ssid}'")
         _broadcast_ws({
             "type": "dhcp_ready",
             "detail": f"Hotspot WiFi '{config.wifi_hotspot_ssid}' đã sẵn sàng phát IP 192.168.137.x",
@@ -1740,6 +1771,12 @@ async def lifespan(app: FastAPI):
                 break
             await asyncio.sleep(0.5)
         else:
+            _G = "\033[92m"
+            _B = "\033[1m"
+            _R = "\033[0m"
+            print(f"{_B}{_G}{'=' * 65}")
+            print(f"  ✅ PROXY SERVER ĐÃ SẴN SÀNG — TUN proxy active, traffic được bảo vệ.")
+            print(f"{'=' * 65}{_R}")
             logger.info(
                 f"[Main] ✓ Mihomo verified running — TUN proxy active, traffic được bảo vệ."
             )
@@ -1747,7 +1784,9 @@ async def lifespan(app: FastAPI):
         # Xóa sạch toàn bộ DNS trên LAN và TUN adapters để đảm bảo trống 100%
         try:
             from app.network_setup import clear_interface_dns
-            clear_interface_dns(lan_interface=config.lan_interface, tun_interface=config.tun_interface, wan_interface=config.wan_interface)
+            _tun_name = config.tun_interface or "GenRouterTUN"
+            logger.info(f"[Main] Clearing DNS on TUN='{_tun_name}', LAN='{config.lan_interface}', WAN='{config.wan_interface}' (protected)")
+            clear_interface_dns(lan_interface=config.lan_interface, tun_interface=_tun_name, wan_interface=config.wan_interface)
         except Exception as e:
             logger.warning(f"[Main] Clear interface DNS error: {e}")
 
