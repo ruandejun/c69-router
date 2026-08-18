@@ -53,13 +53,21 @@ def get_status(
     # ── Auto register new active devices from ARP table ──
     if mac_registry:
         try:
-            subnet_prefix = ".".join(config.lan_gateway_ip.split(".")[:3]) + "."
-            arp_map = get_arp_mac_map(subnet_prefix)
+            prefixes_to_scan = set()
+            if config.lan_gateway_ip:
+                prefixes_to_scan.add(".".join(config.lan_gateway_ip.split(".")[:3]) + ".")
+            # Luôn quét thêm subnet Wi-Fi Hotspot 192.168.137.x để nhận diện thiết bị trên Win11/Win10
+            prefixes_to_scan.add("192.168.137.")
+
+            arp_map = {}
+            for pfx in prefixes_to_scan:
+                arp_map.update(get_arp_mac_map(pfx))
+
             registered_macs = {d.mac.upper() for d in mac_registry.get_all_devices()}
             
             for ip, mac in arp_map.items():
                 mac_upper = mac.upper()
-                if ip == config.lan_gateway_ip:
+                if ip == config.lan_gateway_ip or ip == "192.168.137.1":
                     continue
                 if mac_upper.startswith("52:41:53:20"): # RAS adapter
                     continue
@@ -96,10 +104,6 @@ def get_status(
                                 if singbox_manager:
                                     # Zero-downtime: IP trong DHCP pool đã được pre-provision
                                     # sẵn selector → chỉ đổi qua Clash API, KHÔNG full-restart.
-                                    # Trước đây gọi hot_reload() (full restart) ngay trong lúc
-                                    # xử lý /status — mà dashboard poll /status liên tục, nên
-                                    # mỗi thiết bị ARP mới lại restart sing-box 1 lần → "restart
-                                    # nhiều lần". Chỉ fallback restart nếu IP nằm ngoài pool.
                                     singbox_manager.update_config(config)
                                     singbox_manager.update_device_routing(ip, best_proxy_id)
         except Exception as e:

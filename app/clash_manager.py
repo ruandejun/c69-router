@@ -233,18 +233,18 @@ class ClashManager:
         except Exception:
             pass
 
-        # Nếu bật WiFi Hotspot, pre-provision cả dải 192.168.137.2 -> 192.168.137.254
-        if getattr(config, "wifi_hotspot_enabled", False):
-            try:
-                hs_cursor = ipaddress.IPv4Address("192.168.137.2")
-                hs_end = ipaddress.IPv4Address("192.168.137.254")
-                while hs_cursor <= hs_end:
-                    ip_str = str(hs_cursor)
-                    if ip_str not in known_ips and ip_str not in unclaimed_pool_ips:
-                        unclaimed_pool_ips.append(ip_str)
-                    hs_cursor += 1
-            except Exception:
-                pass
+        # Luôn pre-provision cả dải Wi-Fi Hotspot 192.168.137.2 -> 192.168.137.254
+        # Đảm bảo thiết bị kết nối vào Windows Mobile Hotspot (cả Win10 & Win11) luôn có sẵn selector định tuyến
+        try:
+            hs_cursor = ipaddress.IPv4Address("192.168.137.2")
+            hs_end = ipaddress.IPv4Address("192.168.137.254")
+            while hs_cursor <= hs_end:
+                ip_str = str(hs_cursor)
+                if ip_str not in known_ips and ip_str not in unclaimed_pool_ips:
+                    unclaimed_pool_ips.append(ip_str)
+                hs_cursor += 1
+        except Exception:
+            pass
 
         proxy_groups: List[Dict[str, Any]] = []
         seen_group_names = set()

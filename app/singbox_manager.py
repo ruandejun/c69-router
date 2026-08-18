@@ -381,6 +381,18 @@ class SingBoxManager:
                 pool_cursor += 1
         except Exception as e:
             logger.warning(f"[SingBox] Failed to enumerate DHCP pool for pre-provisioning: {e}")
+
+        # Luôn pre-provision cả dải Wi-Fi Hotspot 192.168.137.2 -> 192.168.137.254
+        try:
+            hs_cursor = ipaddress.IPv4Address("192.168.137.2")
+            hs_end = ipaddress.IPv4Address("192.168.137.254")
+            while hs_cursor <= hs_end:
+                ip_str = str(hs_cursor)
+                if ip_str not in known_ips and ip_str not in unclaimed_pool_ips:
+                    unclaimed_pool_ips.append(ip_str)
+                hs_cursor += 1
+        except Exception:
+            pass
         pool_default_target = "block-out" if block_direct else "direct-out"
 
         seen_ips = set()
