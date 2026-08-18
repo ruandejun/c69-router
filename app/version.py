@@ -1,7 +1,7 @@
 """GenRouter Version & Build Information — Auto-generated at build time"""
 
-VERSION = "2.1.8"
-BUILD_DATE = "2026-08-18 08:30:00"
+VERSION = "2.1.9"
+BUILD_DATE = "2026-08-18 11:39:00"
 BUILD_STRING = f"v{VERSION} (Build: {BUILD_DATE})"
 
 def get_version_info() -> dict:

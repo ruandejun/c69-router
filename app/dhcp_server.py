@@ -584,7 +584,19 @@ class DHCPServer:
                 except Exception:
                     pass
 
+            # Log Parameter Request List (Option 55) for debugging — helps identify
+            # which options a client expects and may reject the OFFER without
+            param_req = options.get(OPT_PARAM_REQ)
+            _param_list_str = ""
+            if param_req:
+                _param_list_str = ",".join(str(b) for b in param_req)
+
             if msg_type == DHCP_DISCOVER:
+                logger.info(
+                    f"[DHCP] DISCOVER from {mac_str} (hostname='{hostname}', "
+                    f"hlen={hlen}, flags=0x{flags:04X}, "
+                    f"param_req=[{_param_list_str}])"
+                )
                 self._handle_discover(xid, mac_str, chaddr[:hlen], flags, hostname)
             elif msg_type == DHCP_REQUEST:
                 self._handle_request(
@@ -629,9 +641,8 @@ class DHCPServer:
 
         is_known = self.mac_registry and self.mac_registry.get_ip_for_mac(mac_str) is not None
         logger.info(
-            f"[DHCP] DISCOVER from {mac_str} "
-            f"({'known' if is_known else 'new device'}) "
-            f"→ OFFER {offered_ip}"
+            f"[DHCP] → OFFER {offered_ip} to {mac_str} "
+            f"({'known' if is_known else 'NEW device'})"
         )
 
         self._send_response(
@@ -845,6 +856,17 @@ class DHCPServer:
                 options += bytes([OPT_LEASE_TIME, 4])
                 options += struct.pack("!I", self.lease_time)
 
+                # Option 58: T1 Renewal Time (REQUIRED by many Windows DHCP clients)
+                # If missing, some Windows builds silently ignore the OFFER
+                t1_renewal = self.lease_time // 2
+                options += bytes([58, 4])
+                options += struct.pack("!I", t1_renewal)
+
+                # Option 59: T2 Rebinding Time (REQUIRED by many Windows DHCP clients)
+                t2_rebinding = (self.lease_time * 7) // 8
+                options += bytes([59, 4])
+                options += struct.pack("!I", t2_rebinding)
+
                 # Option 1: Subnet Mask
                 options += bytes([OPT_SUBNET_MASK, 4])
                 options += _ip_to_bytes(self.subnet_mask)
@@ -856,6 +878,11 @@ class DHCPServer:
                 # Option 6: DNS Server
                 options += bytes([OPT_DNS, 4])
                 options += _ip_to_bytes(self.dns_server)
+
+                # Option 15: Domain Name (Windows clients commonly request this)
+                domain_name = b"genrouter.local"
+                options += bytes([15, len(domain_name)])
+                options += domain_name
 
                 # Option 28: Broadcast Address
                 try:
