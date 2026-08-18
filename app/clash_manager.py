@@ -304,8 +304,22 @@ class ClashManager:
                 "proxies": group_proxies
             })
 
-        # 4. Xây dựng Rules (SRC-IP-CIDR)
+        # 4. Xây dựng Rules
         rules: List[str] = []
+
+        # ── BYPASS CỤC BỘ & DASHBOARD ROUTER: Luôn đi DIRECT 100% ──
+        # Đảm bảo thiết bị (kể cả đã gán Proxy SOCKS5) luôn truy cập được Dashboard Web (port 9000/8000),
+        # Gateway Router (192.168.137.1, 192.168.10.1), DNS, và các IP cục bộ mà không bị gửi qua Proxy.
+        rules.append("DST-PORT,9000,DIRECT")
+        rules.append("DST-PORT,8000,DIRECT")
+        rules.append("DST-PORT,53,DIRECT")
+        rules.append("IP-CIDR,127.0.0.0/8,DIRECT,no-resolve")
+        rules.append("IP-CIDR,192.168.137.1/32,DIRECT,no-resolve")
+        rules.append("IP-CIDR,192.168.10.1/32,DIRECT,no-resolve")
+        if config.lan_gateway_ip:
+            rules.append(f"IP-CIDR,{config.lan_gateway_ip}/32,DIRECT,no-resolve")
+        rules.append("IP-CIDR,224.0.0.0/4,DIRECT,no-resolve")
+        rules.append("IP-CIDR,255.255.255.255/32,DIRECT,no-resolve")
 
         # TỰ ĐỘNG BẢO VỆ ARUBA / ACCESS POINT: Luôn đi DIRECT 100% không bao giờ qua proxy
         from app.mac_registry import is_aruba_or_ap_mac

@@ -209,9 +209,13 @@ class SingBoxManager:
             "127.0.0.0/8",          # Loopback
             "10.0.0.0/8",           # Private class A (giữ lại để không loop proxy)
             "172.16.0.0/12",        # Private class B (Docker/Hyper-V ranges)
+            "192.168.137.1/32",     # Hotspot gateway / Dashboard IP
+            "192.168.10.1/32",      # Wired LAN gateway / Dashboard IP
             "224.0.0.0/4",          # Multicast
             "255.255.255.255/32"    # Broadcast
         ]
+        if config.lan_gateway_ip and f"{config.lan_gateway_ip}/32" not in local_cidrs:
+            local_cidrs.append(f"{config.lan_gateway_ip}/32")
         for bypass in config.bypass_cidrs:
             bypass = bypass.strip()
             if not bypass:
@@ -317,6 +321,7 @@ class SingBoxManager:
             # Match theo port không cần sniff nên hoạt động độc lập với cấu hình sniff.
             {"port": 53, "action": "hijack-dns"},
             {"protocol": "dns", "action": "hijack-dns"},
+            {"port": [9000, 8000], "outbound": "direct-out"},
             {"ip_cidr": local_cidrs, "outbound": "direct-out"},
         ]
 
