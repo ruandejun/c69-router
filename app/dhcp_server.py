@@ -548,9 +548,10 @@ class DHCPServer:
                 except Exception:
                     pass
 
-            # Ignore requests from host's own MAC/hostname or Windows RAS virtual adapters belonging to this host
-            host_name_upper = socket.gethostname().upper()
-            is_host_name = hostname and (hostname.upper() == host_name_upper)
+            # Ignore requests from host's own MAC or Windows RAS virtual adapters
+            # NOTE: hostname check was REMOVED — it caused false positives when
+            # different PCs share the same Windows hostname (e.g. WINDOWS-XXXXXXX).
+            # MAC-based check is globally unique and sufficient.
             
             # Check if it is a RAS adapter belonging to this host
             is_my_ras = False
@@ -562,10 +563,9 @@ class DHCPServer:
                         is_my_ras = True
                         break
             
-            if mac_str in self.host_macs or is_host_name or is_my_ras:
+            if mac_str in self.host_macs or is_my_ras:
                 reasons = []
                 if mac_str in self.host_macs: reasons.append("host's own MAC")
-                if is_host_name: reasons.append(f"host name match ({hostname})")
                 if is_my_ras: reasons.append("host's own RAS virtual interface")
                 reason = " & ".join(reasons)
                 logger.info(f"[DHCP] Ignoring DHCP request from host (detected via {reason}: {mac_str} / name: {hostname})")
