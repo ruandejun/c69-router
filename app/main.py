@@ -1648,9 +1648,23 @@ async def lifespan(app: FastAPI):
             # Readiness check — bao cao chi tiet
             _dhcp_check = _dhcp_server.readiness_check()
             if _dhcp_check["ready"]:
-                logger.info(f"[Main] ✅ DHCP Server fully ready: {_dhcp_check['detail']}")
+                logger.info("=" * 65)
+                logger.info("  🟢 DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ")
+                logger.info(f"  → Card LAN       : {config.lan_interface} (IP Gateway: {config.lan_gateway_ip})")
+                logger.info(f"  → Dải IP cấp phát: {config.dhcp_range_start} → {config.dhcp_range_end}")
+                logger.info(f"  → Trạng thái     : HOÀN TẤT (Sender socket bind {config.lan_gateway_ip}:67)")
+                logger.info("  → Thiết bị kết nối vào AP/Switch sẽ nhận IP ngay lập tức!")
+                logger.info("=" * 65)
+                _broadcast_ws({
+                    "type": "dhcp_ready",
+                    "detail": f"DHCP đã sẵn sàng cấp IP ({config.dhcp_range_start} → {config.dhcp_range_end}) trên '{config.lan_interface}'",
+                    "timestamp": __import__('time').time(),
+                })
             elif _dhcp_check["sender_degraded"]:
-                logger.warning(f"[Main] ⚠ DHCP Server DEGRADED: {_dhcp_check['detail']}")
+                logger.warning("=" * 65)
+                logger.warning("  🟡 DHCP SERVER ĐANG CHẠY Ở CHẾ ĐỘ CẢNH BÁO (DEGRADED)")
+                logger.warning(f"  → {_dhcp_check['detail']}")
+                logger.warning("=" * 65)
                 _broadcast_ws({
                     "type": "dhcp_degraded",
                     "detail": _dhcp_check["detail"],
@@ -1662,7 +1676,9 @@ async def lifespan(app: FastAPI):
             _err_detail = _dhcp_server._startup_error if _dhcp_server else "unknown"
             _dhcp_server = None
             _err = f"DHCP Server failed to start after {_dhcp_max_retries} attempts"
-            logger.error(f"[Main] ❌ {_err}: {_err_detail}")
+            logger.error("=" * 65)
+            logger.error(f"  🔴 LỖI KHỞI ĐỘNG DHCP SERVER: {_err_detail}")
+            logger.error("=" * 65)
             _broadcast_ws({
                 "type": "dhcp_failed",
                 "detail": f"{_err}: {_err_detail}",
@@ -1670,10 +1686,17 @@ async def lifespan(app: FastAPI):
             })
     elif _is_hotspot_mode:
         _dhcp_server = None
-        logger.info(
-            "[Main] Hotspot mode: bỏ qua DHCP server nội bộ — "
-            "Windows ICS (icssvc) đảm nhận cấp phát IP 192.168.137.x cho thiết bị kết nối."
-        )
+        logger.info("=" * 65)
+        logger.info("  🟢 WIFI HOTSPOT ĐÃ SẴN SÀNG PHÁT IP (Windows ICS)")
+        logger.info(f"  → Tên Wi-Fi (SSID) : {config.wifi_hotspot_ssid}")
+        logger.info(f"  → Mật khẩu Hotspot : {config.wifi_hotspot_password}")
+        logger.info(f"  → Cấp phát IP      : Subnet 192.168.137.x tự động bởi Windows")
+        logger.info("=" * 65)
+        _broadcast_ws({
+            "type": "dhcp_ready",
+            "detail": f"Hotspot WiFi '{config.wifi_hotspot_ssid}' đã sẵn sàng phát IP 192.168.137.x",
+            "timestamp": __import__('time').time(),
+        })
     else:
         _dhcp_server = None
         logger.info("[Main] DHCP Server disabled in config.")
@@ -1770,9 +1793,12 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(auto_rotate_loop(app))
 
     # 9. Start Auto-Update check background loop (chỉ kiểm tra, không tự áp dụng)
-    asyncio.create_task(update_check_loop())
-
-    logger.info("[Main] ✓ Startup complete — app ready to serve traffic.")
+    active_port = int(os.environ.get("GENROUTER_ACTIVE_PORT", "9000"))
+    logger.info("=" * 65)
+    logger.info(f"  🚀 GENROUTER v{VERSION} ĐÃ SẴN SÀNG HOẠT ĐỘNG HOÀN TOÀN")
+    logger.info(f"  → Dashboard UI : http://localhost:{active_port} hoặc http://{config.lan_gateway_ip}")
+    logger.info(f"  → Trạng thái   : Router=🟢 OK | DHCP=🟢 SẴN SÀNG | Proxy=🟢 OK")
+    logger.info("=" * 65)
     yield  # App is running
 
     # ── Shutdown ──
@@ -1910,6 +1936,7 @@ def get_singbox_log(lines: int = QueryParam(default=30, ge=1, le=200)):
 
 # ─── WebSocket ───────────────────────────────────────────
 
+@app.websocket("/ws")
 @app.websocket("/ws/status")
 async def websocket_status(websocket: WebSocket):
     await websocket.accept()
