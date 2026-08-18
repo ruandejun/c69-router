@@ -306,20 +306,18 @@ def get_system_health(
     except Exception:
         wan_status = "error"
 
-    # In hotspot mode, DHCP is handled by Windows ICS — dhcp_server is None and that's OK
-    _is_hotspot = getattr(config, "wifi_hotspot_enabled", False)
-    _dhcp_ok = True if _is_hotspot else (dhcp_server and dhcp_server.is_running)
+    _dhcp_running = dhcp_server.is_running if dhcp_server else False
 
     return {
         "lan": lan_health,
-        "dhcp_running": True if _is_hotspot else (dhcp_server.is_running if dhcp_server else False),
+        "dhcp_running": _dhcp_running,
         "singbox_running": singbox_manager.is_running if singbox_manager else False,
         "singbox_last_error": singbox_manager.last_error if singbox_manager else None,
         "wan_status": wan_status,
         "wan_interface": wan_interface,
         "overall": "healthy" if (
             lan_health["status"] == "healthy"
-            and _dhcp_ok
+            and _dhcp_running
             and wan_status == "healthy"
         ) else "degraded",
     }

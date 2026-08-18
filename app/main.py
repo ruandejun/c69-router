@@ -434,7 +434,7 @@ def _on_dhcp_lease(mac: str, ip: str, name: str, ip_changed: bool = True):
                 ip_addr = ipaddress.IPv4Address(ip)
                 start_ip = ipaddress.IPv4Address(config.dhcp_range_start)
                 end_ip = ipaddress.IPv4Address(config.dhcp_range_end)
-                is_in_pool = start_ip <= ip_addr <= end_ip
+                is_in_pool = (start_ip <= ip_addr <= end_ip) or (ip_addr in ipaddress.IPv4Network("192.168.137.0/24"))
             except Exception:
                 pass
 
@@ -1602,31 +1602,48 @@ async def lifespan(app: FastAPI):
         _singbox_manager.set_crash_callback(_on_singbox_event)
 
     # 6. Start DHCP Server
-    # HOTSPOT MODE: Khi wifi_hotspot_enabled=True, Windows ICS (icssvc/SharedAccess) đã tự
-    # serve DHCP cho subnet 192.168.137.0/24. Chạy DHCP của mình trên 0.0.0.0:67 song song
-    # sẽ conflict → phone không nhận được IP. Skip DHCP, để Windows ICS handle.
-    _is_hotspot_mode = (
-        getattr(config, "wifi_hotspot_enabled", False)
-        and platform.system() == "Windows"
-        and _hotspot_topology_ready
-    )
-    if config.dhcp_enabled and not _is_hotspot_mode and not (
+    # Hỗ trợ cấp phát DHCP cho cả có dây (Ethernet/Aruba) và Wi-Fi Hotspot (192.168.137.x).
+    # Windows ICS thường không cấp DHCP hoặc bị lỗi trên Win10/11 -> DHCPServer trực tiếp cấp IP,
+    # gán DNS 9.9.9.9 (cho TUN hijack), Option 58/59/15, và đồng bộ thiết bị vào mac_registry / UI.
+    _dhcp_should_start = config.dhcp_enabled and not (
         getattr(config, "wifi_hotspot_enabled", False) and not _hotspot_topology_ready
-    ):
+    )
+    if _dhcp_should_start:
+        _dhcp_server_ip = config.lan_gateway_ip or "192.168.10.1"
+        _dhcp_mask = config.lan_subnet_mask or "255.255.255.0"
+        _dhcp_start = config.dhcp_range_start
+        _dhcp_end = config.dhcp_range_end
+        _dhcp_iface = config.lan_interface
+
+        # Nếu ở Hotspot mode hoặc server_ip thuộc 192.168.137.x:
+        # Tự động điều chỉnh dải DHCP sang 192.168.137.10 -> 192.168.137.250 nếu dải config chưa đúng
+        if _is_hotspot_mode or _dhcp_server_ip.startswith("192.168.137."):
+            _dhcp_server_ip = _dhcp_server_ip or "192.168.137.1"
+            _dhcp_mask = "255.255.255.0"
+            try:
+                import ipaddress as _ip
+                _net = _ip.IPv4Network(f"{_dhcp_server_ip}/{_dhcp_mask}", strict=False)
+                if _ip.IPv4Address(_dhcp_start) not in _net or _ip.IPv4Address(_dhcp_end) not in _net:
+                    _dhcp_start = "192.168.137.10"
+                    _dhcp_end = "192.168.137.250"
+            except Exception:
+                _dhcp_start = "192.168.137.10"
+                _dhcp_end = "192.168.137.250"
+
         _dhcp_server = DHCPServer(
-            server_ip=config.lan_gateway_ip,
-            subnet_mask=config.lan_subnet_mask,
+            server_ip=_dhcp_server_ip,
+            subnet_mask=_dhcp_mask,
             # LƯU Ý: KHÔNG dùng config.lan_gateway_ip ở đây — gateway nằm cùng subnet LAN với
             # phone (on-link) nên traffic tới nó không bao giờ đi qua route mặc định (TUN capture),
             # bất kể có exclude hay không → hijack-dns sẽ không bao giờ bắt được. Phải dùng 1 IP
             # public off-subnet (config.dns_server) để buộc traffic đi qua default route → vào TUN.
             dns_server=config.dns_server,
-            pool_start=config.dhcp_range_start,
-            pool_end=config.dhcp_range_end,
+            pool_start=_dhcp_start,
+            pool_end=_dhcp_end,
             lease_time=config.dhcp_lease_time,
             mac_registry=_mac_registry,
             on_lease_callback=_on_dhcp_lease,
-            interface_name=config.lan_interface,
+            interface_name=_dhcp_iface,
         )
 
         # Retry DHCP start toi da 3 lan (port 67 co the bi chiem tam thoi boi process cu)
@@ -1655,22 +1672,25 @@ async def lifespan(app: FastAPI):
             # Readiness check — bao cao chi tiet
             _dhcp_check = _dhcp_server.readiness_check()
             if _dhcp_check["ready"]:
+                _mode_name = "WIFI HOTSPOT" if _is_hotspot_mode else "WIRED LAN"
+                _target_desc = f"Hotspot WiFi '{config.wifi_hotspot_ssid}'" if _is_hotspot_mode else "AP/Switch"
                 _dhcp_msg = [
                     f"{_BOLD}{_GREEN}" + "=" * 65,
-                    f"  ✅ DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ",
-                    f"  → Card LAN       : {config.lan_interface} (IP Gateway: {config.lan_gateway_ip})",
-                    f"  → Dải IP cấp phát: {config.dhcp_range_start} → {config.dhcp_range_end}",
-                    f"  → Trạng thái     : HOÀN TẤT (Sender socket bind {config.lan_gateway_ip}:67)",
-                    f"  → Thiết bị kết nối vào AP/Switch sẽ nhận IP ngay lập tức!",
+                    f"  ✅ DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ ({_mode_name})",
+                    f"  → Card LAN       : {_dhcp_iface} (IP Gateway: {_dhcp_server_ip})",
+                    f"  → Dải IP cấp phát: {_dhcp_start} → {_dhcp_end}",
+                    f"  → DNS cấp phát   : {config.dns_server} (Hijack qua TUN)",
+                    f"  → Trạng thái     : HOÀN TẤT (Sender socket bind {_dhcp_server_ip}:67)",
+                    f"  → Thiết bị kết nối vào {_target_desc} sẽ nhận IP ngay lập tức!",
                     "=" * 65 + f"{_RESET}",
                 ]
                 for _line in _dhcp_msg:
                     print(_line)
-                logger.info("  ✅ DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ")
-                logger.info(f"  → Card LAN: {config.lan_interface} | Dải: {config.dhcp_range_start} → {config.dhcp_range_end}")
+                logger.info(f"  ✅ DHCP SERVER ĐÃ SẴN SÀNG CẤP IP CHO THIẾT BỊ ({_mode_name})")
+                logger.info(f"  → Card: {_dhcp_iface} | Gateway: {_dhcp_server_ip} | Dải: {_dhcp_start} → {_dhcp_end}")
                 _broadcast_ws({
                     "type": "dhcp_ready",
-                    "detail": f"DHCP đã sẵn sàng cấp IP ({config.dhcp_range_start} → {config.dhcp_range_end}) trên '{config.lan_interface}'",
+                    "detail": f"DHCP đã sẵn sàng cấp IP ({_dhcp_start} → {_dhcp_end}) trên '{_dhcp_iface}'",
                     "timestamp": __import__('time').time(),
                 })
             elif _dhcp_check["sender_degraded"]:
@@ -1707,30 +1727,9 @@ async def lifespan(app: FastAPI):
                 "detail": f"{_err}: {_err_detail}",
                 "timestamp": __import__('time').time(),
             })
-    elif _is_hotspot_mode:
-        _dhcp_server = None
-        _GREEN = "\033[92m"
-        _RESET = "\033[0m"
-        _BOLD = "\033[1m"
-        _hs_msg = [
-            f"{_BOLD}{_GREEN}" + "=" * 65,
-            f"  ✅ WIFI HOTSPOT ĐÃ SẴN SÀNG PHÁT IP (Windows ICS)",
-            f"  → Tên Wi-Fi (SSID) : {config.wifi_hotspot_ssid}",
-            f"  → Mật khẩu Hotspot : {config.wifi_hotspot_password}",
-            f"  → Cấp phát IP      : Subnet 192.168.137.x tự động bởi Windows",
-            "=" * 65 + f"{_RESET}",
-        ]
-        for _line in _hs_msg:
-            print(_line)
-        logger.info(f"[Main] ✅ WIFI HOTSPOT ĐÃ SẴN SÀNG: SSID='{config.wifi_hotspot_ssid}'")
-        _broadcast_ws({
-            "type": "dhcp_ready",
-            "detail": f"Hotspot WiFi '{config.wifi_hotspot_ssid}' đã sẵn sàng phát IP 192.168.137.x",
-            "timestamp": __import__('time').time(),
-        })
     else:
         _dhcp_server = None
-        logger.info("[Main] DHCP Server disabled in config.")
+        logger.info("[Main] DHCP Server disabled in config or hotspot topology not ready.")
 
     # 7. Apply routing (start sing-box) — SYNCHRONOUS: chờ thật sự lên trước khi yield.
     # Trước đây: apply_routing() → hot_reload() → debounce timer 1s → fire-and-forget.
