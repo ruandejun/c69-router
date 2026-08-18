@@ -808,12 +808,18 @@ class ClashManager:
         """Nạp lại cấu hình."""
         return self.reload_now()
 
-    def update_multiple_devices_routing(self, assignments: List[Dict[str, Any]]) -> bool:
-        """Cập nhật định tuyến cho nhiều thiết bị cùng lúc."""
+    def update_multiple_devices_routing(self, assignments: list) -> bool:
+        """Cập nhật định tuyến cho nhiều thiết bị cùng lúc.
+        assignments: list of tuple (device_ip, proxy_id) hoặc list of dict {"ip": ..., "proxy_id": ...}
+        """
         success_all = True
         for item in assignments:
-            ip = item.get("ip")
-            proxy_id = item.get("proxy_id")
+            # Support both tuple (ip, proxy_id) and dict {"ip": ..., "proxy_id": ...}
+            if isinstance(item, (tuple, list)):
+                ip, proxy_id = item[0], item[1] if len(item) > 1 else None
+            else:
+                ip = item.get("ip")
+                proxy_id = item.get("proxy_id")
             if ip:
                 if not self.update_device_routing(ip, proxy_id):
                     success_all = False
