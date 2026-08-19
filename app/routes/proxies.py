@@ -1420,3 +1420,141 @@ def fetch_and_assign_dpn(
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Webshare API Integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/webshare/status")
+def webshare_status(config=Depends(get_config)):
+    """Trạng thái Webshare health check cronjob."""
+    from app.webshare_manager import get_webshare_status
+
+    status = get_webshare_status()
+    return {
+        "enabled": getattr(config, "webshare_enabled", False),
+        "has_api_key": bool(getattr(config, "webshare_api_key", "")),
+        "check_interval_minutes": getattr(config, "webshare_check_interval_minutes", 5),
+        "auto_replace": getattr(config, "webshare_auto_replace", True),
+        **status,
+    }
+
+
+@router.post("/webshare/check-now")
+def webshare_check_now(
+    background_tasks: BackgroundTasks,
+    config=Depends(get_config),
+    mac_registry=Depends(get_mac_registry),
+    singbox_manager=Depends(get_singbox_manager),
+):
+    """Trigger kiểm tra proxy health + thay thế Die từ Webshare ngay lập tức.
+
+    Chạy non-blocking (background). Kết quả xem tại /webshare/status.
+    """
+    from app.webshare_manager import run_health_check_and_replace, _webshare_state
+
+    if _webshare_state.get("is_running"):
+        return {
+            "status": "already_running",
+            "message": "Webshare health check đang chạy, vui lòng đợi."
+        }
+
+    if not getattr(config, "webshare_api_key", ""):
+        raise HTTPException(
+            status_code=400,
+            detail="Chưa cấu hình Webshare API key. Vào Settings → nhập API key trước."
+        )
+
+    def _do_check():
+        result = run_health_check_and_replace(config, mac_registry, singbox_manager)
+        logger.info(f"[Webshare] Manual check done: {result}")
+
+    background_tasks.add_task(_do_check)
+
+    return {
+        "status": "started",
+        "message": "Đã bắt đầu kiểm tra proxy health + thay thế Die từ Webshare..."
+    }
+
+
+@router.post("/webshare/import")
+def webshare_import(
+    config=Depends(get_config),
+    singbox_manager=Depends(get_singbox_manager),
+):
+    """Import tất cả proxy từ Webshare API vào danh sách proxy.
+
+    Chỉ import proxy chưa có trong config (không trùng host:port).
+    """
+    from app.webshare_manager import fetch_all_webshare_proxies
+    from app.config import ProxyConfig, save_config
+
+    api_key = getattr(config, "webshare_api_key", "")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Chưa cấu hình Webshare API key. Vào Settings → nhập API key trước."
+        )
+
+    try:
+        webshare_proxies = fetch_all_webshare_proxies(api_key)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Lỗi gọi Webshare API: {e}")
+
+    if not webshare_proxies:
+        return {
+            "status": "empty",
+            "message": "Webshare API trả về danh sách proxy rỗng hoặc không có proxy valid.",
+            "imported": 0,
+        }
+
+    # Import chỉ proxy chưa có
+    existing_hosts = {(p.host, p.port) for p in config.proxies}
+    imported = []
+
+    for wp in webshare_proxies:
+        ws_host = wp.get("proxy_address", "")
+        ws_port = wp.get("port", 0)
+
+        if not ws_host or not ws_port:
+            continue
+        if (ws_host, ws_port) in existing_hosts:
+            continue
+
+        proxy_id = f"ws_{ws_host.replace('.', '_')}_{ws_port}"
+        new_proxy = ProxyConfig(
+            id=proxy_id,
+            type="socks5",
+            host=ws_host,
+            port=ws_port,
+            username=wp.get("username", ""),
+            password=wp.get("password", ""),
+            status="Unknown",
+            latency=-1,
+            dns_server="1.1.1.1",
+        )
+        config.proxies.append(new_proxy)
+        existing_hosts.add((ws_host, ws_port))
+        imported.append({
+            "id": proxy_id,
+            "host": ws_host,
+            "port": ws_port,
+            "country": wp.get("country_code", ""),
+        })
+
+    if imported:
+        save_config(config)
+        if singbox_manager:
+            try:
+                singbox_manager.update_config(config)
+                singbox_manager.hot_reload()
+            except Exception as e:
+                logger.error(f"[Webshare] Hot-reload after import error: {e}")
+
+    logger.info(f"[Webshare] Imported {len(imported)} proxies from Webshare API")
+
+    return {
+        "status": "success",
+        "message": f"Đã import {len(imported)} proxy mới từ Webshare ({len(webshare_proxies)} total trên Webshare).",
+        "imported": len(imported),
+        "proxies": imported,
+    }

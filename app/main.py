@@ -315,6 +315,69 @@ async def update_check_loop():
             logger.warning(f"[AutoUpdate] Lỗi vòng lặp kiểm tra bản mới: {e}")
         await asyncio.sleep(6 * 3600)  # Mỗi 6 tiếng
 
+
+async def webshare_health_loop(app):
+    """Vòng lặp chạy nền kiểm tra proxy health + tự thay thế proxy Die từ Webshare API.
+
+    Chỉ chạy khi config.webshare_enabled=True và config.webshare_api_key không rỗng.
+    Chu kỳ: config.webshare_check_interval_minutes (mặc định 5 phút).
+
+    Flow mỗi vòng:
+    1. bulk_test_proxies() → kiểm tra tất cả proxy Live/Die
+    2. Proxy Die → gọi Webshare API lấy proxy mới thay thế
+    3. Cập nhật config + routing cho thiết bị đang dùng proxy Die
+    """
+    from app.webshare_manager import run_health_check_and_replace
+
+    await asyncio.sleep(60)  # Chờ router khởi động ổn định (60s)
+
+    while True:
+        try:
+            mac_registry = getattr(app.state, "mac_registry", None)
+            singbox_manager = getattr(app.state, "singbox_manager", None)
+
+            if not mac_registry or not singbox_manager:
+                await asyncio.sleep(30)
+                continue
+
+            config = singbox_manager.config
+            if not config:
+                await asyncio.sleep(30)
+                continue
+
+            # Chỉ chạy khi Webshare enabled
+            if not getattr(config, "webshare_enabled", False):
+                await asyncio.sleep(30)
+                continue
+
+            if not getattr(config, "webshare_api_key", ""):
+                await asyncio.sleep(60)
+                continue
+
+            interval_minutes = max(getattr(config, "webshare_check_interval_minutes", 5), 1)
+
+            logger.info(f"[Webshare] Bắt đầu health check (chu kỳ {interval_minutes} phút)...")
+            result = run_health_check_and_replace(config, mac_registry, singbox_manager)
+
+            if result["replaced"] > 0:
+                logger.info(
+                    f"[Webshare] ✓ Health check xong: "
+                    f"Checked={result['checked']}, Dead={result['dead']}, "
+                    f"Replaced={result['replaced']}"
+                )
+            elif result["dead"] > 0:
+                logger.warning(
+                    f"[Webshare] ⚠ Health check xong: "
+                    f"{result['dead']} proxy Die nhưng không thay được"
+                )
+
+        except Exception as e:
+            logger.error(f"[Webshare] Health loop error: {e}", exc_info=True)
+
+        # Sleep theo interval
+        interval_secs = max(getattr(config, "webshare_check_interval_minutes", 5), 1) * 60
+        await asyncio.sleep(interval_secs)
+
 from app.network_setup import (
     setup_network, setup_nat, verify_nat, ensure_wan_forwarding_disabled,
     optimize_tcp_stack, setup_interface_dns, detect_wan_interface, is_wan_interface_valid,
@@ -1829,6 +1892,9 @@ async def lifespan(app: FastAPI):
 
     # 8. Start Auto-Rotate background loop
     asyncio.create_task(auto_rotate_loop(app))
+
+    # 8.1 Start Webshare Health Check background loop
+    asyncio.create_task(webshare_health_loop(app))
 
     # 9. Start Auto-Update check background loop (chỉ kiểm tra, không tự áp dụng)
     active_port = int(os.environ.get("GENROUTER_ACTIVE_PORT", "9000"))

@@ -35,6 +35,11 @@ class SettingsUpdatePayload(BaseModel):
     wifi_hotspot_enabled: bool = False
     wifi_hotspot_ssid: str = "C69-Router"
     wifi_hotspot_password: str | None = Field(default=None, min_length=8, max_length=63)
+    # Webshare API Integration
+    webshare_api_key: str = ""
+    webshare_enabled: bool = False
+    webshare_check_interval_minutes: int = 5
+    webshare_auto_replace: bool = True
 
     @field_validator("wifi_hotspot_ssid")
     @classmethod
@@ -48,7 +53,12 @@ class SettingsUpdatePayload(BaseModel):
 @router.get("")
 def get_settings(config=Depends(get_config)):
     """Return non-secret settings for the management UI."""
-    return config.model_dump(exclude={"wifi_hotspot_password"})
+    data = config.model_dump(exclude={"wifi_hotspot_password"})
+    # Mask Webshare API key (chỉ hiện 6 ký tự cuối)
+    api_key = getattr(config, "webshare_api_key", "")
+    if api_key and len(api_key) > 6:
+        data["webshare_api_key"] = "*" * (len(api_key) - 6) + api_key[-6:]
+    return data
 
 
 @router.post("/update")
@@ -78,6 +88,13 @@ def update_settings(
     config.wifi_hotspot_ssid = payload.wifi_hotspot_ssid
     if payload.wifi_hotspot_password is not None:
         config.wifi_hotspot_password = payload.wifi_hotspot_password
+
+    # Webshare settings
+    if payload.webshare_api_key:
+        config.webshare_api_key = payload.webshare_api_key
+    config.webshare_enabled = payload.webshare_enabled
+    config.webshare_check_interval_minutes = max(payload.webshare_check_interval_minutes, 1)
+    config.webshare_auto_replace = payload.webshare_auto_replace
 
     save_config(config)
 

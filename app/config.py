@@ -147,6 +147,14 @@ class AppConfig(BaseModel):
     wifi_hotspot_ssid: str = "C69-Router"
     wifi_hotspot_password: str = "Matkhau123"
 
+    # ── Webshare API Integration ──
+    # Cronjob tự động check proxy health và thay thế proxy Die bằng proxy mới từ Webshare.
+    # Cần Webshare API key (lấy từ https://proxy.webshare.io/dashboard/ → API)
+    webshare_api_key: str = ""                     # Webshare API Token (để trống = tắt)
+    webshare_enabled: bool = False                 # Bật/tắt cronjob auto-check & replace
+    webshare_check_interval_minutes: int = 5       # Chu kỳ check proxy health (phút)
+    webshare_auto_replace: bool = True             # True = tự thay proxy Die bằng proxy Webshare mới
+
     # ── Data ──
     proxies: List[ProxyConfig] = Field(default_factory=list)
 
