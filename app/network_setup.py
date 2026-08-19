@@ -1886,6 +1886,32 @@ def setup_mobile_hotspot_ps(ssid="C69-Router", password="matkhau123", wan_interf
         subprocess.run(["powershell", "-NoProfile", "-Command", reg_ps], capture_output=True, timeout=5)
     except Exception:
         pass
+
+    # ── Chống Windows tự tắt hotspot khi không có thiết bị kết nối ──
+    # Windows 10/11 mặc định tắt Mobile Hotspot sau vài phút khi không có client.
+    # Fix: Set PeerlessTimeout = 120 (phút) — gần như vô hiệu hóa auto-off.
+    # Đồng thời tắt Power Management trên WiFi adapter để tránh OS ngắt adapter khi idle.
+    try:
+        disable_auto_off_ps = (
+            "$icsPath = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\icssvc\\Settings'; "
+            "if (-not (Test-Path $icsPath)) { New-Item -Path $icsPath -Force | Out-Null }; "
+            "Set-ItemProperty $icsPath -Name 'PeerlessTimeout' -Value 120 -Type DWord -Force -EA SilentlyContinue; "
+            "Get-NetAdapter | Where-Object { $_.InterfaceDescription -like '*Wi-Fi*' -or $_.InterfaceDescription -like '*Wireless*' } | "
+            "ForEach-Object { "
+            "  $devId = $_.PnpDeviceID; "
+            "  $pm = Get-CimInstance -ClassName MSPower_DeviceEnable -Namespace root/WMI -EA SilentlyContinue | "
+            "    Where-Object { $_.InstanceName -like \"*$devId*\" }; "
+            "  if ($pm -and $pm.Enable) { $pm | Set-CimInstance -Property @{Enable=$false} -EA SilentlyContinue } "
+            "}"
+        )
+        _r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", disable_auto_off_ps],
+            capture_output=True, text=True, timeout=10
+        )
+        logger.info("[Hotspot] ✓ Disabled auto-off: PeerlessTimeout=120min + WiFi power mgmt off")
+    except Exception as _e:
+        logger.warning(f"[Hotspot] Failed to disable auto-off (non-fatal): {_e}")
+
     logger.info(f"[Hotspot] Starting Windows Mobile Hotspot WinRT: SSID='{ssid}' wan={wan_interface}")
 
     # PS script WinRT hotspot - PS5.1 compatible

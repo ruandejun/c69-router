@@ -378,6 +378,140 @@ async def webshare_health_loop(app):
         interval_secs = max(getattr(config, "webshare_check_interval_minutes", 5), 1) * 60
         await asyncio.sleep(interval_secs)
 
+
+async def hotspot_watchdog_loop(app):
+    """Vòng lặp chạy nền giám sát WiFi Hotspot — tự restart nếu Windows tự tắt.
+
+    Windows 10/11 có cơ chế tự tắt Mobile Hotspot khi:
+    1. Không có thiết bị kết nối (PeerlessTimeout, mặc định ~5 phút)
+    2. Máy tính ngủ/hibernate rồi thức dậy
+    3. WiFi adapter bị power management tắt
+    4. ICS service crash hoặc restart
+
+    Watchdog check mỗi 30 giây. Nếu phát hiện hotspot chết → tự gọi
+    setup_hosted_network() để bật lại, KHÔNG cần user restart app.
+    """
+    await asyncio.sleep(90)  # Chờ router khởi động + hotspot lần đầu ổn định
+
+    _consecutive_failures = 0
+    _max_consecutive = 5  # Sau 5 lần restart fail liên tiếp → dừng cố
+    _last_restart_time = 0.0
+
+    while True:
+        await asyncio.sleep(30)  # Check mỗi 30 giây
+
+        try:
+            config = getattr(app.state, "config_loader", None)
+            if config is None:
+                singbox_mgr = getattr(app.state, "singbox_manager", None)
+                config = singbox_mgr.config if singbox_mgr else None
+            if not config:
+                continue
+
+            # Chỉ chạy khi hotspot mode enabled
+            if not getattr(config, "wifi_hotspot_enabled", False):
+                _consecutive_failures = 0
+                continue
+
+            import platform
+            if platform.system() != "Windows":
+                continue
+
+            from app.network_setup import (
+                is_tethering_active, get_hosted_network_adapter,
+                setup_hosted_network, resolve_hotspot_topology,
+            )
+
+            # Check 1: Tethering còn active không?
+            tethering_on = is_tethering_active()
+
+            # Check 2: Virtual adapter còn không?
+            hotspot_adapter = get_hosted_network_adapter()
+
+            if tethering_on and hotspot_adapter:
+                # Hotspot vẫn sống — reset failure counter
+                if _consecutive_failures > 0:
+                    logger.info("[HotspotWatchdog] ✓ Hotspot recovered, clearing failure counter.")
+                _consecutive_failures = 0
+                continue
+
+            # ──── Hotspot đã chết! ────
+            import time
+            now = time.time()
+
+            # Rate limit: không restart quá nhanh (tối thiểu 30s giữa 2 lần)
+            if now - _last_restart_time < 30:
+                continue
+
+            if _consecutive_failures >= _max_consecutive:
+                if _consecutive_failures == _max_consecutive:
+                    logger.error(
+                        f"[HotspotWatchdog] 🔴 Đã thử restart {_max_consecutive} lần liên tiếp đều fail. "
+                        f"Dừng cố gắng — cần user kiểm tra thủ công."
+                    )
+                    _consecutive_failures += 1  # Tránh log lặp
+                continue
+
+            _consecutive_failures += 1
+            detail = (
+                f"tethering={'ON' if tethering_on else 'OFF'}, "
+                f"adapter={'YES' if hotspot_adapter else 'NONE'}"
+            )
+            logger.warning(
+                f"[HotspotWatchdog] ⚠ Hotspot chết! ({detail}) "
+                f"— Thử restart lần {_consecutive_failures}/{_max_consecutive}..."
+            )
+
+            # Restart hotspot
+            ssid = getattr(config, "wifi_hotspot_ssid", "C69-Router") or "C69-Router"
+            pwd = getattr(config, "wifi_hotspot_password", "Matkhau123") or "Matkhau123"
+            wan = getattr(config, "wan_interface", "") or ""
+
+            ok = setup_hosted_network(ssid=ssid, password=pwd, wan_interface=wan)
+            _last_restart_time = time.time()
+
+            if ok:
+                # Chờ adapter xuất hiện
+                new_adapter = None
+                for _ in range(20):
+                    new_adapter = get_hosted_network_adapter()
+                    if new_adapter:
+                        break
+                    await asyncio.sleep(0.5)
+
+                if new_adapter:
+                    # Cập nhật lan_interface nếu adapter mới khác
+                    if config.lan_interface != new_adapter:
+                        config.lan_interface = new_adapter
+                        from app.config import save_config
+                        save_config(config)
+
+                    logger.info(
+                        f"[HotspotWatchdog] ✓ Hotspot restart thành công! "
+                        f"SSID='{ssid}', adapter='{new_adapter}'"
+                    )
+                    _consecutive_failures = 0
+
+                    # Broadcast WS để Dashboard biết
+                    _broadcast_ws({
+                        "type": "hotspot_recovered",
+                        "detail": f"Hotspot '{ssid}' đã được tự động restart sau khi Windows tắt.",
+                        "adapter": new_adapter,
+                        "timestamp": time.time(),
+                    })
+                else:
+                    logger.warning(
+                        "[HotspotWatchdog] ⚠ Hotspot restart OK nhưng không tìm thấy virtual adapter."
+                    )
+            else:
+                logger.error(
+                    f"[HotspotWatchdog] ✗ Hotspot restart thất bại (lần {_consecutive_failures})."
+                )
+
+        except Exception as e:
+            logger.error(f"[HotspotWatchdog] Error: {e}", exc_info=True)
+
+
 from app.network_setup import (
     setup_network, setup_nat, verify_nat, ensure_wan_forwarding_disabled,
     optimize_tcp_stack, setup_interface_dns, detect_wan_interface, is_wan_interface_valid,
@@ -1895,6 +2029,9 @@ async def lifespan(app: FastAPI):
 
     # 8.1 Start Webshare Health Check background loop
     asyncio.create_task(webshare_health_loop(app))
+
+    # 8.2 Start Hotspot Watchdog — tự restart nếu Windows tắt hotspot khi idle
+    asyncio.create_task(hotspot_watchdog_loop(app))
 
     # 9. Start Auto-Update check background loop (chỉ kiểm tra, không tự áp dụng)
     active_port = int(os.environ.get("GENROUTER_ACTIVE_PORT", "9000"))
