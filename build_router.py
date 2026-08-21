@@ -331,20 +331,23 @@ def upload_to_r2(zip_path: str) -> str:
     s3.upload_file(
         zip_path, R2_BUCKET_NAME, ZIP_KEY,
         Callback=progress,
-        ExtraArgs={"ContentType": "application/zip"},
+        ExtraArgs={
+            "ContentType": "application/zip",
+            "CacheControl": "no-cache, no-store, must-revalidate, max-age=0",
+        },
     )
     with open(zip_path, "rb") as package_file:
         sha256 = hashlib.sha256(package_file.read()).hexdigest()
     try:
         from app.version import VERSION as _app_ver
     except Exception:
-        _app_ver = "2.1.2"
+        _app_ver = "2.1.14"
     app_version = os.environ.get("C69_ROUTER_VERSION", "") or _app_ver
     manifest = {
         "version": app_version,
         "download_url": f"{R2_PUBLIC_URL.rstrip('/')}/{ZIP_KEY}" if R2_PUBLIC_URL else "",
         "sha256": sha256,
-        "changelog": f"Cập nhật v{app_version}: Sửa lỗi NetNat masquerade IP, ẩn thiết bị AP Aruba, đổi tên nút Restart Router, hiển thị ngày giờ build."
+        "changelog": f"Cập nhật v{app_version}: Fix Hotspot DHCP và thêm rules bypass Dashboard 192.168.137.1:9000."
     }
     if manifest["version"] and not re.fullmatch(r"\d+(?:\.\d+){1,3}", manifest["version"]):
         raise ValueError("C69_ROUTER_VERSION must be a semantic version such as 2.1.1")
@@ -355,6 +358,7 @@ def upload_to_r2(zip_path: str) -> str:
             Key=manifest_key,
             Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
             ContentType="application/json",
+            CacheControl="no-cache, no-store, must-revalidate, max-age=0",
         )
         print(f"  Manifest SHA-256 uploaded: {manifest_key}")
     print(f"\n  Upload hoàn tất!")
